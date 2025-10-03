@@ -8,19 +8,16 @@ import adafruit_dht
 import paho.mqtt.client as mqtt
 from typing import List, Tuple, Optional
 from AtlasI2C import AtlasI2C
+from config import MQTTConfig, SensorConfig
 
 
 class Config:
-    """Application configuration"""
-    BROKER_ADDRESS = "172.30.1.38"
-    PORT = 1883
-    DHT_PIN = 26
-    DEFAULT_POLL_INTERVAL = 5.0
-    SENSOR_NAME_MAPPING = {
-        "RTD": "water_temperature",
-        "PH": "ph",
-        "EC": "ec"
-    }
+    """Application configuration (deprecated - use config.py)"""
+    BROKER_ADDRESS = MQTTConfig.HOST
+    PORT = MQTTConfig.PORT
+    DHT_PIN = SensorConfig.DHT_PIN
+    DEFAULT_POLL_INTERVAL = SensorConfig.DEFAULT_POLL_INTERVAL
+    SENSOR_NAME_MAPPING = SensorConfig.SENSOR_NAME_MAPPING
 
 
 class MQTTPublisher:
@@ -55,7 +52,7 @@ class MQTTPublisher:
 
     def publish(self, sensor_name: str, value):
         """Publish sensor data to MQTT broker"""
-        topic = f"environment/{sensor_name.lower()}"
+        topic = f"{MQTTConfig.TOPIC_ENVIRONMENT_PREFIX}/{sensor_name.lower()}"
         payload = {
             "pattern": topic,
             "data": {

@@ -19,25 +19,26 @@ Usage:
 import sys, time, json, threading, queue, signal, logging
 import paho.mqtt.client as mqtt
 import serial
+from config import MQTTConfig, SerialConfig, LoggingConfig
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
+logging.basicConfig(level=getattr(logging, LoggingConfig.LEVEL), format=LoggingConfig.FORMAT)
 
 # 마지막 상태를 저장하여 변경사항만 출력
 last_states = {}
 
-# 환경변수에서 설정값을 가져오고, 없으면 기본값 사용
-SERIAL_DEV = '/dev/ttyUSB0'
-BAUD = int('115200')
-MQTT_HOST = '172.30.1.38'
-MQTT_PORT = int('1883')
+# Config에서 설정값 가져오기
+SERIAL_DEV = SerialConfig.DEVICE
+BAUD = SerialConfig.BAUD_RATE
+MQTT_HOST = MQTTConfig.HOST
+MQTT_PORT = MQTTConfig.PORT
 
 logging.info("Configuration: SERIAL_DEV=%s, BAUD=%d, MQTT_HOST=%s, MQTT_PORT=%d", SERIAL_DEV, BAUD, MQTT_HOST, MQTT_PORT)
 
-MQTT_SWITCH_WILDCARD = "switch/+"
-TOPIC_CURRENT_PREFIX = "current"
-TOPIC_SWITCH_PREFIX = "switch"
+MQTT_SWITCH_WILDCARD = MQTTConfig.SWITCH_WILDCARD
+TOPIC_CURRENT_PREFIX = MQTTConfig.TOPIC_CURRENT_PREFIX
+TOPIC_SWITCH_PREFIX = MQTTConfig.TOPIC_SWITCH_PREFIX
 TOPIC_RAW = "mpino/raw"
-STATUS_TOPIC = "status/mpino_bridge_strict"
+STATUS_TOPIC = f"{MQTTConfig.TOPIC_STATUS_PREFIX}/mpino_bridge_strict"
 
 # queue for outgoing serial lines
 ser_tx_q = queue.Queue(maxsize=200)
@@ -187,7 +188,14 @@ def main():
     ser = None
     while True:
         try:
-            ser = serial.Serial(SERIAL_DEV, BAUD, timeout=0, write_timeout=2, dsrdtr=False, rtscts=False)
+            ser = serial.Serial(
+                SERIAL_DEV,
+                BAUD,
+                timeout=SerialConfig.TIMEOUT,
+                write_timeout=SerialConfig.WRITE_TIMEOUT,
+                dsrdtr=SerialConfig.DSRDTR,
+                rtscts=SerialConfig.RTSCTS
+            )
             logging.info("Opened serial %s @ %d", SERIAL_DEV, BAUD)
             break
         except Exception as e:
