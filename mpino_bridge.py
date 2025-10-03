@@ -27,6 +27,9 @@ logging.basicConfig(level=getattr(logging, LoggingConfig.LEVEL), format=LoggingC
 # 마지막 상태를 저장하여 변경사항만 출력
 last_states = {}
 
+# Shutdown 플래그
+shutdown_flag = False
+
 # Config에서 설정값 가져오기
 SERIAL_DEV = SerialConfig.DEVICE
 BAUD = SerialConfig.BAUD_RATE
@@ -101,8 +104,9 @@ def on_mqtt_message(c, userdata, msg):
         logging.error("Serial queue full - dropping command")
 
 def serial_reader_loop(ser):
+    global shutdown_flag
     buf = ""
-    while True:
+    while not shutdown_flag:
         try:
             data = ser.read(ser.in_waiting or 1)
             if not data:
@@ -121,6 +125,8 @@ def serial_reader_loop(ser):
                 logging.debug("Serial recv: %s", line)
                 process_serial_line(line)
         except Exception as e:
+            if shutdown_flag:
+                break
             logging.exception("Serial reader error: %s", e)
             time.sleep(1)
 
@@ -164,15 +170,20 @@ def process_serial_line(line):
     logging.warning("Ignored serial JSON with unknown/unsupported cmd: %s", cmd)
 
 def serial_writer_loop(ser):
-    while True:
+    global shutdown_flag
+    while not shutdown_flag:
         try:
-            line = ser_tx_q.get()
+            line = ser_tx_q.get(timeout=0.5)
             if line is None:
                 continue
             logging.info("Serial send: %s", line.strip())
             ser.write(line.encode('utf-8'))
             ser.flush()
+        except queue.Empty:
+            continue
         except Exception as e:
+            if shutdown_flag:
+                break
             logging.exception("Serial write error: %s", e)
             time.sleep(1)
 
@@ -209,6 +220,11 @@ def main():
     rdr.start(); wtr.start()
 
     def shutdown(signum=None, frame=None):
+        global shutdown_flag
+        if shutdown_flag:
+            return  # 이미 shutdown 중이면 중복 실행 방지
+        shutdown_flag = True
+
         logging.info("Shutting down")
 
         # Backend에 에러 리포트 전송
@@ -241,6 +257,21 @@ def main():
                 except:
                     pass
 
+        # 모든 current 상태를 false로 전송
+        for state_key in last_states.keys():
+            if state_key.startswith("current/"):
+                dev = state_key.replace("current/", "")
+                payload = {
+                    "pattern": f"current/{dev}",
+                    "data": {"name": dev, "value": False}
+                }
+                topic = f"{TOPIC_CURRENT_PREFIX}/{dev}"
+                try:
+                    client.publish(topic, json.dumps(payload))
+                    logging.info("Shutdown: Published %s -> %s", topic, payload)
+                except:
+                    pass
+
         time.sleep(0.5)  # MQTT 메시지 전송 대기
 
         try:
@@ -248,6 +279,10 @@ def main():
         except:
             pass
         client.loop_stop()
+
+        # 스레드 종료 대기
+        time.sleep(0.5)
+
         try:
             ser.close()
         except:

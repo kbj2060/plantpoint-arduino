@@ -56,5 +56,5 @@ class LoggingConfig:
 
 class BackendConfig:
     """PlantPoint Backend API 설정"""
-    BASE_URL = os.getenv('BACKEND_URL', 'http://172.30.1.50:9000')
+    BASE_URL = os.getenv('BACKEND_URL', 'http://172.30.1.38:3000/api')
     REPORT_ENDPOINT = '/reports/create'
