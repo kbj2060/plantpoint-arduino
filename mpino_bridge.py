@@ -209,7 +209,24 @@ def main():
 
     def shutdown(signum=None, frame=None):
         logging.info("Shutting down")
-        # MQTT offline 발행 주석처리 (다른 시스템 반응 방지)
+
+        # 모든 switch 상태를 false로 전송하여 릴레이 끄기
+        for state_key in last_states.keys():
+            if state_key.startswith("switch/"):
+                dev = state_key.replace("switch/", "")
+                payload = {
+                    "pattern": f"switch/{dev}",
+                    "data": {"name": dev, "value": False}
+                }
+                topic = f"{TOPIC_SWITCH_PREFIX}/{dev}"
+                try:
+                    client.publish(topic, json.dumps(payload))
+                    logging.info("Shutdown: Published %s -> %s", topic, payload)
+                except:
+                    pass
+
+        time.sleep(0.5)  # MQTT 메시지 전송 대기
+
         try:
             client.publish(STATUS_TOPIC, "offline", retain=True)
         except:
@@ -219,7 +236,7 @@ def main():
             ser.close()
         except:
             pass
-        logging.info("Shutdown complete - MQTT offline not published")
+        logging.info("Shutdown complete")
         sys.exit(0)
 
     signal.signal(signal.SIGINT, shutdown)
