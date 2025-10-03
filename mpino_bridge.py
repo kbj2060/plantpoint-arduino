@@ -201,6 +201,7 @@ def main():
 
     def shutdown(signum=None, frame=None):
         logging.info("Shutting down")
+        # MQTT offline 발행 주석처리 (다른 시스템 반응 방지)
         try:
             client.publish(STATUS_TOPIC, "offline", retain=True)
         except:
@@ -210,6 +211,7 @@ def main():
             ser.close()
         except:
             pass
+        logging.info("Shutdown complete - MQTT offline not published")
         sys.exit(0)
 
     signal.signal(signal.SIGINT, shutdown)
