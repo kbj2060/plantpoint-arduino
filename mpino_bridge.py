@@ -43,8 +43,11 @@ STATUS_TOPIC = "status/mpino_bridge_strict"
 ser_tx_q = queue.Queue(maxsize=200)
 
 # MQTT client
-client = mqtt.Client("mpino_pi_strict_bridge")
+import uuid
+client_id = f"mpino_pi_strict_bridge_{uuid.uuid4().hex[:8]}"
+client = mqtt.Client(client_id)
 client.will_set(STATUS_TOPIC, payload="offline", qos=0, retain=True)
+logging.info("MQTT Client ID: %s", client_id)
 
 # 주기적 상태 전송을 위한 타이머
 periodic_timer = None
