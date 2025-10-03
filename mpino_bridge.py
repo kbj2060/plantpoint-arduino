@@ -187,7 +187,7 @@ def main():
     ser = None
     while True:
         try:
-            ser = serial.Serial(SERIAL_DEV, BAUD, timeout=0, write_timeout=2)
+            ser = serial.Serial(SERIAL_DEV, BAUD, timeout=0, write_timeout=2, dsrdtr=False, rtscts=False)
             logging.info("Opened serial %s @ %d", SERIAL_DEV, BAUD)
             break
         except Exception as e:
