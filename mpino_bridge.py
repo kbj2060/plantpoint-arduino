@@ -49,8 +49,6 @@ client = mqtt.Client(client_id)
 client.will_set(STATUS_TOPIC, payload="offline", qos=0, retain=True)
 logging.info("MQTT Client ID: %s", client_id)
 
-# 주기적 상태 전송을 위한 타이머
-periodic_timer = None
 
 def safe_json_loads(s):
     try:
@@ -138,20 +136,17 @@ def process_serial_line(line):
     val = j.get("val")
 
     if cmd == "current" and isinstance(dev, str):
-        # 상태 변경된 경우만 출력
+        # 전류값은 변경 여부 상관없이 바로 발행
         state_key = f"current/{dev}"
-        if last_states.get(state_key) != val:
-            last_states[state_key] = val
-            # MPINO 형식에 맞춰 발행: {"pattern":"current/dev","data":{"name":"dev","value":val}}
-            payload = {
-                "pattern": f"current/{dev}",
-                "data": {"name": dev, "value": val}
-            }
-            topic = f"{TOPIC_CURRENT_PREFIX}/{dev}"
-            client.publish(topic, json.dumps(payload))
-            logging.info("Published %s -> %s", topic, payload)
-        else:
-            logging.debug("No change for %s (still %s)", dev, val)
+        last_states[state_key] = val
+        # MPINO 형식에 맞춰 발행: {"pattern":"current/dev","data":{"name":"dev","value":val}}
+        payload = {
+            "pattern": f"current/{dev}",
+            "data": {"name": dev, "value": val}
+        }
+        topic = f"{TOPIC_CURRENT_PREFIX}/{dev}"
+        client.publish(topic, json.dumps(payload))
+        logging.info("Published %s -> %s", topic, payload)
         return
 
     if cmd == "switch" and isinstance(dev, str):
@@ -179,28 +174,6 @@ def serial_writer_loop(ser):
             logging.exception("Serial write error: %s", e)
             time.sleep(1)
 
-def publish_current_states():
-    """주기적으로 현재 상태를 MQTT로 발행"""
-    global periodic_timer
-    try:
-        for state_key, val in last_states.items():
-            if state_key.startswith("current/"):
-                dev = state_key.replace("current/", "")
-                payload = {
-                    "pattern": f"current/{dev}",
-                    "data": {"name": dev, "value": val}
-                }
-                topic = f"{TOPIC_CURRENT_PREFIX}/{dev}"
-                client.publish(topic, json.dumps(payload))
-                logging.debug("Periodic publish %s -> %s", topic, payload)
-    except Exception as e:
-        logging.exception("Error in periodic publish: %s", e)
-    finally:
-        # 5초 후 다시 실행
-        periodic_timer = threading.Timer(5.0, publish_current_states)
-        periodic_timer.daemon = True
-        periodic_timer.start()
-
 def main():
     client.on_connect = on_mqtt_connect
     client.on_message = on_mqtt_message
@@ -226,15 +199,8 @@ def main():
     wtr = threading.Thread(target=serial_writer_loop, args=(ser,), daemon=True)
     rdr.start(); wtr.start()
 
-    # 주기적 상태 전송 시작
-    publish_current_states()
-    logging.info("Started periodic state publishing (every 5 seconds)")
-
     def shutdown(signum=None, frame=None):
-        global periodic_timer
         logging.info("Shutting down")
-        if periodic_timer:
-            periodic_timer.cancel()
         try:
             client.publish(STATUS_TOPIC, "offline", retain=True)
         except:
