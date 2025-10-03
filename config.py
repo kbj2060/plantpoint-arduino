@@ -54,11 +54,7 @@ class LoggingConfig:
     FORMAT = "%(asctime)s %(levelname)s: %(message)s"
 
 
-# 하위 호환성을 위한 legacy config (deprecated)
-class Config:
-    """Legacy config class for atlas_jet.py"""
-    BROKER_ADDRESS = MQTTConfig.HOST
-    PORT = MQTTConfig.PORT
-    DHT_PIN = SensorConfig.DHT_PIN
-    DEFAULT_POLL_INTERVAL = SensorConfig.DEFAULT_POLL_INTERVAL
-    SENSOR_NAME_MAPPING = SensorConfig.SENSOR_NAME_MAPPING
+class BackendConfig:
+    """PlantPoint Backend API 설정"""
+    BASE_URL = os.getenv('BACKEND_URL', 'http://172.30.1.50:9000')
+    REPORT_ENDPOINT = '/reports/create'

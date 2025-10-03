@@ -16,10 +16,11 @@ Usage:
   python3 mpino_pi_strict_bridge.py /dev/ttyUSB0 115200 localhost 1883
 """
 
-import sys, time, json, threading, queue, signal, logging
+import sys, time, json, threading, queue, signal, logging, atexit
 import paho.mqtt.client as mqtt
 import serial
-from config import MQTTConfig, SerialConfig, LoggingConfig
+import requests
+from config import MQTTConfig, SerialConfig, LoggingConfig, BackendConfig
 
 logging.basicConfig(level=getattr(logging, LoggingConfig.LEVEL), format=LoggingConfig.FORMAT)
 
@@ -210,6 +211,21 @@ def main():
     def shutdown(signum=None, frame=None):
         logging.info("Shutting down")
 
+        # Backend에 에러 리포트 전송
+        try:
+            report_url = f"{BackendConfig.BASE_URL}{BackendConfig.REPORT_ENDPOINT}"
+            report_data = {
+                "level": 2,  # 경고 레벨
+                "problem": "MPINO Bridge 종료 - 릴레이 자동 차단됨"
+            }
+            response = requests.post(report_url, json=report_data, timeout=2)
+            if response.status_code == 201:
+                logging.info("Error report sent to backend successfully")
+            else:
+                logging.warning("Failed to send error report: HTTP %d", response.status_code)
+        except Exception as e:
+            logging.error("Could not send error report to backend: %s", e)
+
         # 모든 switch 상태를 false로 전송하여 릴레이 끄기
         for state_key in last_states.keys():
             if state_key.startswith("switch/"):
@@ -241,6 +257,7 @@ def main():
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
+    atexit.register(shutdown)  # 정상 종료 시에도 실행
 
     while True:
         time.sleep(1)
