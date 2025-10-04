@@ -84,8 +84,7 @@ DeviceInfo devices[] = {
   {"led", 62, 22, 14},        // A0=14
   {"waterspray", 63, 23, 15}, // A1=15
   {"fan", 64, 24, 16},        // A2=16
-  {"cooler", 65, 25, 17},     // A3=17
-  {"heater", 66, 26, -1}      // 전류 측정 없음
+  {"airconditioner", 65, 25, 17},     // A3=17
 };
 const int DEVICE_COUNT = 5;
 
