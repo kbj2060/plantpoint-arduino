@@ -1,8 +1,4 @@
 // MPINO-16A8R8T 스위치 제어 및 센서 모니터링 시스템
-// ESP32 명령 수신 → 디지털 출력 제어
-// 디지털 입력 감지 → ESP32로 전송
-// 전류값 측정 → ESP32로 전송
-
 // Serial 버퍼 크기 증가 (기본 64바이트 → 256바이트)
 #define SERIAL_RX_BUFFER_SIZE 256
 #define SERIAL_TX_BUFFER_SIZE 256
@@ -33,18 +29,14 @@ GPIO26  | INPUT_5       | 디지털 입력 5번
 GPIO27  | INPUT_6       | 디지털 입력 6번
 GPIO28  | INPUT_7       | 디지털 입력 7번
 GPIO29  | INPUT_8       | 디지털 입력 8번
-A0      | ANALOG_1      | 아날로그 전류 측정 1번
-A1      | ANALOG_2      | 아날로그 전류 측정 2번
-A2      | ANALOG_3      | 아날로그 전류 측정 3번
-A3      | ANALOG_4      | 아날로그 전류 측정 4번
 
 === 스마트팜 장비 매핑 ===
-채널 | 릴레이핀 | 장비명     | 입력핀   | 전류감지 | 설명
+채널 | 릴레이핀 | 장비명     | 전류감지   | 설명
 -----|----------|------------|----------|----------|------------------
-1    | GPIO62   | LED        | GPIO22   | D14(A0)  | 식물 생장 LED
-2    | GPIO63   | WATERSPRAY | GPIO23   | D15(A1)  | 물 분무 시스템
-3    | GPIO64   | FAN        | GPIO24   | D16(A2)  | 환기 팬
-4    | GPIO65   | COOLER     | GPIO25   | D17(A3)  | 냉각 시스템
+1    | GPIO62   | LED        | GPIO22   | 식물 생장 LED
+2    | GPIO63   | WATERSPRAY | GPIO23   | 물 분무 시스템
+3    | GPIO64   | FAN        | GPIO24   | 환기 팬
+4    | GPIO65   | COOLER     | GPIO25   | 냉각 시스템
 5    | GPIO66   | HEATER     | GPIO26   | -        | 가열 시스템
 6    | GPIO67   | 예비장비1  | GPIO27   | -        | 확장용
 7    | GPIO68   | 예비장비2  | GPIO28   | -        | 확장용
@@ -52,17 +44,19 @@ A3      | ANALOG_4      | 아날로그 전류 측정 4번
 */
 
 /*
-  ESP32 → MPINO:
+  통신 프로토콜:
 
+  1. 장비 설정 (Raspberry Pi → MPINO):
+  {"cmd":"config","devices":[
+    {"name":"led","relay":62,"current":22},
+    {"name":"waterspray","relay":63,"current":23}
+  ]}
+
+  2. 릴레이 제어 (Raspberry Pi → MPINO):
   {"cmd":"switch","dev":"waterspray","val":true}
 
-  MPINO → ESP32:
-
+  3. 전류 상태 전송 (MPINO → Raspberry Pi):
   {"cmd":"current","dev":"led","val":true}
-
-  ESP32 → MQTT (변환):
-
-  {"pattern":"current/led","data":{"name":"led","value":true}}
 */
 #define LED_STATUS 13
 #define RELAY_START_PIN 62
@@ -75,18 +69,13 @@ A3      | ANALOG_4      | 아날로그 전류 측정 4번
 struct DeviceInfo {
   String name;
   int relayPin;
-  int inputPin;
   int currentPin;
 };
 
-// 스마트팜 장비 딕셔너리
-DeviceInfo devices[] = {
-  {"led", 62, 22, 14},        // A0=14
-  {"waterspray", 63, 23, 15}, // A1=15
-  {"fan", 64, 24, 16},        // A2=16
-  {"airconditioner", 65, 25, 17},     // A3=17
-};
-const int DEVICE_COUNT = 5;
+// 스마트팜 장비 딕셔너리 (동적 할당)
+#define MAX_DEVICES 8
+DeviceInfo devices[MAX_DEVICES];
+int DEVICE_COUNT = 0;
 
 bool statusLedState = false;
 
@@ -99,50 +88,36 @@ void setup() {
   digitalWrite(LED_STATUS, HIGH);
   
   Serial.println("=== MPINO-16A8R8T PlantPoint 제어 시스템 ===");
-  Serial.println("버전: 2.0");
+  Serial.println("버전: 3.0 (동적 장비 설정 지원)");
   Serial.println("릴레이 출력: R62-R69 (8채널)");
   Serial.println("디지털 입력: I22-I29 (8채널)");
-  Serial.println("아날로그 입력: A0-A3 (4채널)");
-  
-  
-  
-  // 장비 딕셔너리를 사용하여 핀 설정
-  for (int i = 0; i < DEVICE_COUNT; i++) {
-    // 릴레이 출력 핀 설정
-    pinMode(devices[i].relayPin, OUTPUT);
-    digitalWrite(devices[i].relayPin, LOW);
-    
-    
-    // 전류 감지 핀 설정
-    if (devices[i].currentPin > 0) {
-      pinMode(devices[i].currentPin, INPUT_PULLUP);
-    }
-  }
-  
+  Serial.println("최대 장비 수: " + String(MAX_DEVICES));
+  Serial.println("");
+  Serial.println("장비 설정 대기 중... (config 명령 필요)");
   Serial.println("MPINO 초기화 완료 - " + String(millis()) + "ms");
   
 }
 
-void loop() {  
-  // ESP32로부터 명령 수신 및 처리
+void loop() {
+  // 라즈베리파이로부터 명령 수신 및 처리
   if (Serial3.available()) {
     delay(200); // 충분한 대기 시간 (속도 낮춤)
     String command = Serial3.readStringUntil('\n');
     command.trim();
-    
+
     if (command.length() > 0) {
-      Serial.println("ESP32 명령 수신 (" + String(command.length()) + "자): " + command);
+      Serial.println("라즈베리파이 명령 수신 (" + String(command.length()) + "자): " + command);
       processCommand(command);
     }
   }
-  
+
   // 디지털 전류값 측정 및 전송
   measureAndSendCurrent();
-  
+
   delay(50);
 }
 
-// ESP32 명령 처리
+// 라즈베리파이 명령 처리
 void processCommand(String cmd) {
   // JSON 형태 명령 처리만 지원
   if (cmd.startsWith("{")) {
@@ -156,31 +131,82 @@ void processCommand(String cmd) {
 
 // JSON 명령 처리
 void handleJsonCommand(String jsonMessage) {
-  DynamicJsonDocument doc(512);
+  DynamicJsonDocument doc(1024);
   DeserializationError error = deserializeJson(doc, jsonMessage);
-  
+
   if (error) {
     Serial.println("JSON 파싱 실패: " + String(error.c_str()));
     sendResponse("{\"status\":\"error\",\"message\":\"json parse error\"}");
     return;
   }
-  
+
   // 짧은 형식으로 데이터 추출
   String cmd = doc["cmd"];
+
+  // config 명령 처리 (장비 설정)
+  if (cmd == "config") {
+    handleConfigCommand(doc);
+    return;
+  }
+
+  // switch 명령 처리 (릴레이 제어)
   String deviceName = doc["dev"];
   bool value = doc["val"];
-  
+
   Serial.println("JSON 수신 - 장비: " + deviceName + ", 값: " + String(value ? "ON" : "OFF"));
-  
+
   // 장비 딕셔너리에서 장비 정보 찾기
   DeviceInfo* device = findDevice(deviceName);
   if (device != nullptr) {
     digitalWrite(device->relayPin, value ? HIGH : LOW);
-    
+
     Serial.println("릴레이 R" + String(device->relayPin) + " (" + device->name + ") " + String(value ? "ON" : "OFF"));
   } else {
     Serial.println("알 수 없는 장비: " + deviceName);
   }
+}
+
+// config 명령 처리 (장비 동적 설정)
+void handleConfigCommand(DynamicJsonDocument& doc) {
+  JsonArray devicesArray = doc["devices"];
+
+  if (devicesArray.isNull()) {
+    Serial.println("config 명령 오류: devices 배열 없음");
+    sendResponse("{\"status\":\"error\",\"message\":\"devices array required\"}");
+    return;
+  }
+
+  // 기존 장비 초기화
+  DEVICE_COUNT = 0;
+
+  // 새로운 장비 설정
+  for (JsonObject deviceObj : devicesArray) {
+    if (DEVICE_COUNT >= MAX_DEVICES) {
+      Serial.println("경고: 최대 장비 수 초과");
+      break;
+    }
+
+    String name = deviceObj["name"].as<String>();
+    int relay = deviceObj["relay"];
+    int current = deviceObj["current"];
+
+    devices[DEVICE_COUNT].name = name;
+    devices[DEVICE_COUNT].relayPin = relay;
+    devices[DEVICE_COUNT].currentPin = current;
+
+    // 릴레이 핀 설정
+    pinMode(relay, OUTPUT);
+    digitalWrite(relay, LOW);
+
+    // 전류 감지 핀 설정
+    pinMode(current, INPUT_PULLUP);
+
+    Serial.println("장비 추가: " + name + " (릴레이:" + String(relay) + ", 전류:" + String(current) + ")");
+    DEVICE_COUNT++;
+  }
+
+  Serial.println("장비 설정 완료: " + String(DEVICE_COUNT) + "개");
+  sendResponse("{\"status\":\"ok\",\"count\":" + String(DEVICE_COUNT) + "}");
 }
 
 // 장비 딕셔너리에서 장비 찾기
@@ -205,27 +231,25 @@ void measureAndSendCurrent() {
   if (millis() - lastCurrentCheck < 2000) return;
   lastCurrentCheck = millis();
   
-  // 장비 딕셔너리를 사용하여 전류 측정
+  // 장비 딕셔너리를 사용하여 전류 측정 (24V 디지털 입력)
   for (int i = 0; i < DEVICE_COUNT; i++) {
-    if (devices[i].currentPin > 0) { // 전류 측정 핀이 있는 장비만
-      bool currentState = digitalRead(devices[i].currentPin);
-      
-      // 초기화 또는 상태 변화 시 전송
-      if (!initialized[i] || currentState != lastCurrentValues[i]) {
-        initialized[i] = true;
-        lastCurrentValues[i] = currentState;
-        
-        // 짧은 JSON 형태로 전류 상태 전송
-        DynamicJsonDocument currentDoc(128);
-        currentDoc["cmd"] = "current";
-        currentDoc["dev"] = devices[i].name;
-        currentDoc["val"] = currentState;
-        
-        String currentData;
-        serializeJson(currentDoc, currentData);
-        sendResponse(currentData);
-        Serial.println("디지털 전류 " + devices[i].name + " (핀" + String(devices[i].currentPin) + "): " + String(currentState ? "ON" : "OFF"));
-      }
+    bool currentState = digitalRead(devices[i].currentPin);
+
+    // 초기화 또는 상태 변화 시 전송
+    if (!initialized[i] || currentState != lastCurrentValues[i]) {
+      initialized[i] = true;
+      lastCurrentValues[i] = currentState;
+
+      // 짧은 JSON 형태로 전류 상태 전송
+      DynamicJsonDocument currentDoc(128);
+      currentDoc["cmd"] = "current";
+      currentDoc["dev"] = devices[i].name;
+      currentDoc["val"] = currentState;
+
+      String currentData;
+      serializeJson(currentDoc, currentData);
+      sendResponse(currentData);
+      Serial.println("디지털 전류 " + devices[i].name + " (핀" + String(devices[i].currentPin) + "): " + String(currentState ? "ON" : "OFF"));
     }
   }
 }

@@ -41,11 +41,15 @@ logging.info("Configuration: SERIAL_DEV=%s, BAUD=%d, MQTT_HOST=%s, MQTT_PORT=%d"
 MQTT_SWITCH_WILDCARD = MQTTConfig.SWITCH_WILDCARD
 TOPIC_CURRENT_PREFIX = MQTTConfig.TOPIC_CURRENT_PREFIX
 TOPIC_SWITCH_PREFIX = MQTTConfig.TOPIC_SWITCH_PREFIX
+TOPIC_DEVICE_UPDATE = MQTTConfig.TOPIC_DEVICE_UPDATE
 TOPIC_RAW = "mpino/raw"
 STATUS_TOPIC = f"{MQTTConfig.TOPIC_STATUS_PREFIX}/mpino_bridge_strict"
 
 # queue for outgoing serial lines
 ser_tx_q = queue.Queue(maxsize=200)
+
+# Serial 객체를 전역으로 관리 (device update 핸들러에서 접근하기 위함)
+serial_port = None
 
 # MQTT client
 import uuid
@@ -65,11 +69,17 @@ def on_mqtt_connect(c, userdata, flags, rc):
     logging.info("MQTT connected rc=%s", rc)
     c.publish(STATUS_TOPIC, "online", retain=True)
     c.subscribe(MQTT_SWITCH_WILDCARD)
-    logging.info("Subscribed to %s", MQTT_SWITCH_WILDCARD)
+    c.subscribe(TOPIC_DEVICE_UPDATE)
+    logging.info("Subscribed to %s and %s", MQTT_SWITCH_WILDCARD, TOPIC_DEVICE_UPDATE)
 
 def on_mqtt_message(c, userdata, msg):
     payload = msg.payload.decode('utf-8', errors='ignore').strip()
     logging.info("MQTT recv on %s: %s", msg.topic, payload)
+
+    # device/update 토픽 처리
+    if msg.topic == TOPIC_DEVICE_UPDATE:
+        handle_device_update(payload)
+        return
 
     j = safe_json_loads(payload)
     if not isinstance(j, dict):
@@ -79,7 +89,7 @@ def on_mqtt_message(c, userdata, msg):
     # {"pattern":"switch/<dev>","data":{"name":"<dev>","value":true|false}} 형식만 처리
     pattern = j.get("pattern")
     data = j.get("data")
-    
+
     if not (isinstance(pattern, str) and isinstance(data, dict)):
         logging.warning("Ignored: missing or invalid pattern/data")
         return
@@ -93,7 +103,7 @@ def on_mqtt_message(c, userdata, msg):
     if not isinstance(name, str) or not isinstance(val, bool):
         logging.warning("Ignored: data.name must be string and data.value must be boolean")
         return
-        
+
     # MPINO로 switch 명령 전송
     out_obj = {"cmd":"switch", "dev": name, "val": val}
     line = json.dumps(out_obj) + "\n"
@@ -187,7 +197,97 @@ def serial_writer_loop(ser):
             logging.exception("Serial write error: %s", e)
             time.sleep(1)
 
+def fetch_devices_from_backend():
+    """백엔드에서 장비 목록 및 핀 설정을 가져옴 (machine만)"""
+    try:
+        devices_url = f"{BackendConfig.BASE_URL}{BackendConfig.DEVICES_ENDPOINT}"
+        logging.info("Fetching devices from backend: %s", devices_url)
+        response = requests.get(devices_url, timeout=5)
+
+        if response.status_code == 200:
+            all_devices = response.json()
+            # type이 'machine'인 장비만 필터링
+            devices_data = [d for d in all_devices if d.get('type') == 'machine']
+            logging.info("Fetched %d machine devices from backend (total: %d)", len(devices_data), len(all_devices))
+            return devices_data
+        else:
+            logging.error("Failed to fetch devices: HTTP %d", response.status_code)
+            return []
+    except Exception as e:
+        logging.exception("Error fetching devices from backend: %s", e)
+        return []
+
+def handle_device_update(payload):
+    """device/update MQTT 메시지 처리"""
+    global serial_port
+
+    logging.info("Device update notification received")
+
+    j = safe_json_loads(payload)
+    if not isinstance(j, dict):
+        logging.warning("Invalid device update payload: not JSON object")
+        return
+
+    # 백엔드에서 최신 장비 목록 가져오기
+    devices_data = fetch_devices_from_backend()
+
+    if not devices_data:
+        logging.warning("No machine devices found after update")
+        return
+
+    # MPINO에 config 전송
+    if serial_port:
+        send_config_to_mpino(serial_port, devices_data)
+    else:
+        logging.error("Serial port not available for device update")
+
+def send_config_to_mpino(ser, devices_data):
+    """MPINO에 config 명령을 전송하여 장비 설정"""
+    if not devices_data:
+        logging.warning("No devices to configure")
+        return False
+
+    # 백엔드 데이터를 MPINO config 형식으로 변환
+    mpino_devices = []
+    for device in devices_data:
+        # 필수 필드 확인
+        if not all(key in device for key in ['name', 'relay_pin', 'current_pin']):
+            logging.warning("Device missing required fields: %s", device)
+            continue
+
+        mpino_devices.append({
+            "name": device['name'],
+            "relay": device['relay_pin'],
+            "current": device['current_pin']
+        })
+
+    if not mpino_devices:
+        logging.error("No valid devices to configure")
+        return False
+
+    # config 명령 생성
+    config_cmd = {
+        "cmd": "config",
+        "devices": mpino_devices
+    }
+
+    config_line = json.dumps(config_cmd) + "\n"
+
+    # MPINO에 전송
+    try:
+        logging.info("Sending config to MPINO: %s", config_line.strip())
+        ser.write(config_line.encode('utf-8'))
+        ser.flush()
+        time.sleep(1)  # MPINO가 설정을 처리할 시간 대기
+        logging.info("Config sent successfully")
+        return True
+    except Exception as e:
+        logging.exception("Failed to send config to MPINO: %s", e)
+        return False
+
 def main():
+    global serial_port
+
     client.on_connect = on_mqtt_connect
     client.on_message = on_mqtt_message
     try:
@@ -213,6 +313,16 @@ def main():
         except Exception as e:
             logging.exception("Failed to open serial %s: %s", SERIAL_DEV, e)
             time.sleep(2)
+
+    # 전역 serial_port 설정 (device update 핸들러에서 사용)
+    serial_port = ser
+
+    # 백엔드에서 장비 정보 가져오기 및 MPINO 설정
+    devices_data = fetch_devices_from_backend()
+    if devices_data:
+        send_config_to_mpino(ser, devices_data)
+    else:
+        logging.warning("Starting without device configuration")
 
     # threads
     rdr = threading.Thread(target=serial_reader_loop, args=(ser,), daemon=True)

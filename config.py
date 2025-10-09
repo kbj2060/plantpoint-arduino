@@ -19,6 +19,7 @@ class MQTTConfig:
     TOPIC_SWITCH_PREFIX = "switch"
     TOPIC_ENVIRONMENT_PREFIX = "environment"
     TOPIC_STATUS_PREFIX = "status"
+    TOPIC_DEVICE_UPDATE = "device/update"  # 장비 추가/수정/삭제 알림
 
     # Wildcard subscriptions
     SWITCH_WILDCARD = "switch/+"
@@ -58,3 +59,4 @@ class BackendConfig:
     """PlantPoint Backend API 설정"""
     BASE_URL = os.getenv('BACKEND_URL', 'http://172.30.1.38:3000/api')
     REPORT_ENDPOINT = '/reports/create'
+    DEVICES_ENDPOINT = '/devices'  # 장비 목록 조회
