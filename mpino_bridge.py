@@ -114,7 +114,7 @@ def on_mqtt_message(c, userdata, msg):
         logging.error("Serial queue full - dropping command")
 
 def serial_reader_loop(ser):
-    global shutdown_flag
+    global shutdown_flag, SERIAL_DEV
     buf = ""
     while not shutdown_flag:
         try:
@@ -180,7 +180,7 @@ def process_serial_line(line):
     logging.warning("Ignored serial JSON with unknown/unsupported cmd: %s", cmd)
 
 def serial_writer_loop(ser):
-    global shutdown_flag
+    global shutdown_flag, SERIAL_DEV
     while not shutdown_flag:
         try:
             line = ser_tx_q.get(timeout=0.5)
@@ -195,7 +195,37 @@ def serial_writer_loop(ser):
             if shutdown_flag:
                 break
             logging.exception("Serial write error: %s", e)
-            time.sleep(1)
+            
+            # 시리얼 연결이 끊어진 경우 포트를 다시 스캔
+            logging.info("Serial write failed, scanning for new port...")
+            available_ports = SerialConfig.get_available_ports()
+            logging.info("Available ports: %s", available_ports)
+            
+            if available_ports:
+                new_port = SerialConfig.refresh_device()
+                if new_port != SERIAL_DEV:
+                    logging.info("Found new port: %s (was %s)", new_port, SERIAL_DEV)
+                    SERIAL_DEV = new_port
+                    # 새로운 시리얼 연결 시도
+                    try:
+                        ser.close()
+                    except:
+                        pass
+                    ser = serial.Serial(
+                        SERIAL_DEV,
+                        BAUD,
+                        timeout=SerialConfig.TIMEOUT,
+                        write_timeout=SerialConfig.WRITE_TIMEOUT,
+                        dsrdtr=SerialConfig.DSRDTR,
+                        rtscts=SerialConfig.RTSCTS
+                    )
+                    logging.info("Reconnected to serial %s @ %d", SERIAL_DEV, BAUD)
+                else:
+                    logging.warning("No new port found, retrying in 5 seconds...")
+                    time.sleep(5)
+            else:
+                logging.warning("No serial ports available, retrying in 5 seconds...")
+                time.sleep(5)
 
 def fetch_devices_from_backend():
     """백엔드에서 장비 목록 및 핀 설정을 가져옴 (machine만)"""
