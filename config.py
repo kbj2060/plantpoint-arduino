@@ -60,3 +60,5 @@ class BackendConfig:
     BASE_URL = os.getenv('BACKEND_URL', 'http://172.30.1.38:3000/api')
     REPORT_ENDPOINT = '/reports/create'
     DEVICES_ENDPOINT = '/devices'  # 장비 목록 조회
+    USERNAME = os.getenv('BACKEND_USERNAME', 'llewyn')  # 백엔드 인증용 사용자명
+    PASSWORD = os.getenv('BACKEND_PASSWORD', '1234')  # 백엔드 인증용 비밀번호

@@ -197,12 +197,48 @@ def serial_writer_loop(ser):
             logging.exception("Serial write error: %s", e)
             time.sleep(1)
 
+def get_auth_token():
+    """백엔드에서 인증 토큰을 가져옴"""
+    try:
+        signin_url = f"{BackendConfig.BASE_URL}/authentication/signin"
+        auth_data = {
+            'username': BackendConfig.USERNAME,
+            'password': BackendConfig.PASSWORD
+        }
+        
+        logging.info("Getting auth token from: %s", signin_url)
+        response = requests.post(signin_url, json=auth_data, timeout=10)
+        response.raise_for_status()
+        
+        token_data = response.json()
+        access_token = token_data.get('accessToken')
+        
+        if not access_token:
+            logging.error("No access token in response")
+            return None
+            
+        logging.info("Successfully obtained auth token")
+        return access_token
+        
+    except Exception as e:
+        logging.exception("Error getting auth token: %s", e)
+        return None
+
 def fetch_devices_from_backend():
     """백엔드에서 장비 목록 및 핀 설정을 가져옴 (machine만)"""
     try:
+        # 인증 토큰 가져오기
+        token = get_auth_token()
+        if not token:
+            logging.error("Failed to get auth token")
+            return []
+        
+        # 인증 헤더 설정
+        headers = {'Authorization': f'Bearer {token}'}
+        
         devices_url = f"{BackendConfig.BASE_URL}{BackendConfig.DEVICES_ENDPOINT}"
         logging.info("Fetching devices from backend: %s", devices_url)
-        response = requests.get(devices_url, timeout=5)
+        response = requests.get(devices_url, headers=headers, timeout=10)
 
         if response.status_code == 200:
             all_devices = response.json()
@@ -211,7 +247,7 @@ def fetch_devices_from_backend():
             logging.info("Fetched %d machine devices from backend (total: %d)", len(devices_data), len(all_devices))
             return devices_data
         else:
-            logging.error("Failed to fetch devices: HTTP %d", response.status_code)
+            logging.error("Failed to fetch devices: HTTP %d - %s", response.status_code, response.text)
             return []
     except Exception as e:
         logging.exception("Error fetching devices from backend: %s", e)
@@ -228,7 +264,7 @@ def handle_device_update(payload):
         logging.warning("Invalid device update payload: not JSON object")
         return
 
-    # 백엔드에서 최신 장비 목록 가져오기
+    # 백엔드에서 최신 장비 목록 가져오기 (인증 포함)
     devices_data = fetch_devices_from_backend()
 
     if not devices_data:
@@ -317,7 +353,7 @@ def main():
     # 전역 serial_port 설정 (device update 핸들러에서 사용)
     serial_port = ser
 
-    # 백엔드에서 장비 정보 가져오기 및 MPINO 설정
+    # 백엔드에서 장비 정보 가져오기 및 MPINO 설정 (인증 포함)
     devices_data = fetch_devices_from_backend()
     if devices_data:
         send_config_to_mpino(ser, devices_data)
@@ -337,18 +373,24 @@ def main():
 
         logging.info("Shutting down")
 
-        # Backend에 에러 리포트 전송
+        # Backend에 에러 리포트 전송 (인증 포함)
         try:
-            report_url = f"{BackendConfig.BASE_URL}{BackendConfig.REPORT_ENDPOINT}"
-            report_data = {
-                "level": 2,  # 경고 레벨
-                "problem": "MPINO Bridge 종료 - 릴레이 자동 차단됨"
-            }
-            response = requests.post(report_url, json=report_data, timeout=2)
-            if response.status_code == 201:
-                logging.info("Error report sent to backend successfully")
+            # 인증 토큰 가져오기
+            token = get_auth_token()
+            if token:
+                headers = {'Authorization': f'Bearer {token}'}
+                report_url = f"{BackendConfig.BASE_URL}{BackendConfig.REPORT_ENDPOINT}"
+                report_data = {
+                    "level": 2,  # 경고 레벨
+                    "problem": "MPINO Bridge 종료 - 릴레이 자동 차단됨"
+                }
+                response = requests.post(report_url, json=report_data, headers=headers, timeout=2)
+                if response.status_code == 201:
+                    logging.info("Error report sent to backend successfully")
+                else:
+                    logging.warning("Failed to send error report: HTTP %d", response.status_code)
             else:
-                logging.warning("Failed to send error report: HTTP %d", response.status_code)
+                logging.warning("Could not get auth token for error report")
         except Exception as e:
             logging.error("Could not send error report to backend: %s", e)
 
