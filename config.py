@@ -6,6 +6,53 @@ PlantPoint Arduino Project Configuration
 """
 
 import os
+import serial.tools.list_ports
+import glob
+
+
+def find_serial_port():
+    """
+    사용 가능한 시리얼 포트를 자동으로 찾아서 반환합니다.
+    우선순위: USB 시리얼 포트 > ACM 포트 > 기타 포트
+    """
+    # 1. pyserial의 list_ports를 사용하여 USB 시리얼 포트 찾기
+    ports = serial.tools.list_ports.comports()
+    usb_ports = []
+    
+    for port in ports:
+        # USB 시리얼 포트인지 확인
+        if 'USB' in port.description.upper() or 'Serial' in port.description.upper():
+            usb_ports.append(port.device)
+    
+    # USB 포트가 있으면 정렬해서 첫 번째 반환
+    if usb_ports:
+        usb_ports.sort()
+        return usb_ports[0]
+    
+    # 2. glob을 사용하여 /dev/ttyUSB* 포트 찾기
+    usb_devices = glob.glob('/dev/ttyUSB*')
+    if usb_devices:
+        usb_devices.sort()
+        return usb_devices[0]
+    
+    # 3. /dev/ttyACM* 포트 찾기 (Arduino Uno 등)
+    acm_devices = glob.glob('/dev/ttyACM*')
+    if acm_devices:
+        acm_devices.sort()
+        return acm_devices[0]
+    
+    # 4. 기타 시리얼 포트 찾기
+    other_ports = []
+    for port in ports:
+        if port.device not in usb_ports:
+            other_ports.append(port.device)
+    
+    if other_ports:
+        other_ports.sort()
+        return other_ports[0]
+    
+    # 5. 기본값 반환
+    return '/dev/ttyUSB0'
 
 
 class MQTTConfig:
@@ -27,13 +74,26 @@ class MQTTConfig:
 
 class SerialConfig:
     """시리얼 통신 설정 (MPINO Bridge)"""
-    DEVICE = os.getenv('SERIAL_DEV', '/dev/ttyUSB0')
+    # 환경변수로 포트가 지정되지 않으면 자동 스캔
+    DEVICE = os.getenv('SERIAL_DEV', find_serial_port())
     BAUD_RATE = int(os.getenv('BAUD', '115200'))
     TIMEOUT = 0
     WRITE_TIMEOUT = 2
     # Arduino 리셋 방지
     DSRDTR = False
     RTSCTS = False
+    
+    @classmethod
+    def get_available_ports(cls):
+        """사용 가능한 모든 시리얼 포트 목록을 반환합니다."""
+        ports = serial.tools.list_ports.comports()
+        return [port.device for port in ports]
+    
+    @classmethod
+    def refresh_device(cls):
+        """시리얼 포트를 다시 스캔하여 DEVICE를 업데이트합니다."""
+        cls.DEVICE = find_serial_port()
+        return cls.DEVICE
 
 
 class SensorConfig:
