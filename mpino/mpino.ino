@@ -290,28 +290,22 @@ void measureAndSendCurrent() {
   static unsigned long lastCurrentCheck = 0;
   
   // 2초마다 전류값 측정
-  if (millis() - lastCurrentCheck < 2000) return;
+  if (millis() - lastCurrentCheck < 3000) return;
   lastCurrentCheck = millis();
   
   // 장비 딕셔너리를 사용하여 전류 측정 (24V 디지털 입력)
   for (int i = 0; i < DEVICE_COUNT; i++) {
     bool currentState = digitalRead(devices[i].currentPin);
 
-    // 초기화 또는 상태 변화 시 전송
-    if (!initialized[i] || currentState != lastCurrentValues[i]) {
-      initialized[i] = true;
-      lastCurrentValues[i] = currentState;
+    // 주기적으로 전류 상태 전송 (2초마다 무조건 전송)
+    DynamicJsonDocument currentDoc(128);
+    currentDoc["cmd"] = "current";
+    currentDoc["dev"] = devices[i].name;
+    currentDoc["val"] = currentState;
 
-      // 짧은 JSON 형태로 전류 상태 전송
-      DynamicJsonDocument currentDoc(128);
-      currentDoc["cmd"] = "current";
-      currentDoc["dev"] = devices[i].name;
-      currentDoc["val"] = currentState;
-
-      String currentData;
-      serializeJson(currentDoc, currentData);
-      sendResponse(currentData);
-    }
+    String currentData;
+    serializeJson(currentDoc, currentData);
+    sendResponse(currentData);
   }
 }
 
