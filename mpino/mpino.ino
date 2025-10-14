@@ -59,11 +59,6 @@ GPIO29  | INPUT_8       | 디지털 입력 8번
   {"cmd":"current","dev":"led","val":true}
 */
 #define LED_STATUS 13
-#define RELAY_START_PIN 62
-#define RELAY_END_PIN 69
-#define INPUT_START_PIN 22
-#define INPUT_END_PIN 29
-#define ANALOG_CHANNELS 4
 
 // 장비 정보 구조체
 struct DeviceInfo {
@@ -101,7 +96,7 @@ void setup() {
 void loop() {
   // 라즈베리파이로부터 명령 수신 및 처리
   if (Serial3.available()) {
-    delay(200); // 충분한 대기 시간 (속도 낮춤)
+    delay(100); // 대기 시간 단축
     String command = Serial3.readStringUntil('\n');
     command.trim();
 
@@ -150,20 +145,31 @@ void handleJsonCommand(String jsonMessage) {
   }
 
   // switch 명령 처리 (릴레이 제어)
-  String deviceName = doc["dev"];
-  bool value = doc["val"];
+  if (cmd == "switch") {
+    String deviceName = doc["dev"];
+    bool value = doc["val"];
 
-  Serial.println("JSON 수신 - 장비: " + deviceName + ", 값: " + String(value ? "ON" : "OFF"));
+    Serial.println("JSON 수신 - 장비: " + deviceName + ", 값: " + String(value ? "ON" : "OFF"));
 
-  // 장비 딕셔너리에서 장비 정보 찾기
-  DeviceInfo* device = findDevice(deviceName);
-  if (device != nullptr) {
-    digitalWrite(device->relayPin, value ? HIGH : LOW);
+    // 장비 딕셔너리에서 장비 정보 찾기
+    DeviceInfo* device = findDevice(deviceName);
+    if (device != nullptr) {
+      digitalWrite(device->relayPin, value ? HIGH : LOW);
 
-    Serial.println("릴레이 R" + String(device->relayPin) + " (" + device->name + ") " + String(value ? "ON" : "OFF"));
-  } else {
-    Serial.println("알 수 없는 장비: " + deviceName);
+      Serial.println("릴레이 R" + String(device->relayPin) + " (" + device->name + ") " + String(value ? "ON" : "OFF"));
+      
+      // 응답 전송
+      sendResponse("{\"status\":\"ok\",\"device\":\"" + deviceName + "\",\"value\":" + String(value ? "true" : "false") + "}");
+    } else {
+      Serial.println("알 수 없는 장비: " + deviceName);
+      sendResponse("{\"status\":\"error\",\"message\":\"unknown device: " + deviceName + "\"}");
+    }
+    return;
   }
+
+  // 알 수 없는 명령
+  Serial.println("알 수 없는 명령: " + cmd);
+  sendResponse("{\"status\":\"error\",\"message\":\"unknown command: " + cmd + "\"}");
 }
 
 // config 명령 처리 (장비 동적 설정)

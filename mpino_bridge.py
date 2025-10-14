@@ -378,6 +378,9 @@ def send_config_to_mpino(ser, devices_data):
             "relay": device['relay_pin'],
             "current": current_pin
         })
+        
+        logging.info("Device %s: relay=%d, current=%d", 
+                    device['name'], device['relay_pin'], current_pin)
 
     if not mpino_devices:
         logging.error("No valid devices to configure")
@@ -396,7 +399,13 @@ def send_config_to_mpino(ser, devices_data):
         logging.info("Sending config to MPINO: %s", config_line.strip())
         ser.write(config_line.encode('utf-8'))
         ser.flush()
-        time.sleep(1)  # MPINO가 설정을 처리할 시간 대기
+        time.sleep(2)  # MPINO가 설정을 처리할 시간 대기
+        
+        # MPINO 응답 확인
+        if ser.in_waiting > 0:
+            response = ser.read(ser.in_waiting).decode('utf-8', errors='ignore')
+            logging.info("MPINO response: %s", response.strip())
+        
         logging.info("Config sent successfully")
         return True
     except Exception as e:
