@@ -1,322 +1,214 @@
-// MPINO-16A8R8T 스위치 제어 및 센서 모니터링 시스템
-// Serial 버퍼 크기 증가 (기본 64바이트 → 256바이트)
-#define SERIAL_RX_BUFFER_SIZE 256
-#define SERIAL_TX_BUFFER_SIZE 256
-
+// MPINO-16A8R8T 스위치 제어 및 센서 모니터링 시스템 (v3.1 개선 버전)
 #include <ArduinoJson.h>
 
-/*
-=== MPINO-16A8R8T 하드웨어 구성 ===
-장비명: MPINO-16A8R8T PlantPoint Controller
-기능: 릴레이 제어, 디지털 입력, 아날로그 전류 측정
+// --- 설정값 ---
+#define MAX_DEVICES 10                 // 최대 장비 수
+const unsigned long CURRENT_CHECK_INTERVAL = 2000; // 전류 상태 확인 주기 (2000ms = 2초)
 
-핀 번호 | 기능          | 설명
---------|---------------|------------------
-GPIO62  | RELAY_1       | 출력 릴레이 1번
-GPIO63  | RELAY_2       | 출력 릴레이 2번
-GPIO64  | RELAY_3       | 출력 릴레이 3번
-GPIO65  | RELAY_4       | 출력 릴레이 4번
-GPIO66  | RELAY_5       | 출력 릴레이 5번
-GPIO67  | RELAY_6       | 출력 릴레이 6번
-GPIO68  | RELAY_7       | 출력 릴레이 7번
-GPIO69  | RELAY_8       | 출력 릴레이 8번
-GPIO22  | INPUT_1       | 디지털 입력 1번
-GPIO23  | INPUT_2       | 디지털 입력 2번
-GPIO24  | INPUT_3       | 디지털 입력 3번
-GPIO25  | INPUT_4       | 디지털 입력 4번
-GPIO26  | INPUT_5       | 디지털 입력 5번
-GPIO27  | INPUT_6       | 디지털 입력 6번
-GPIO28  | INPUT_7       | 디지털 입력 7번
-GPIO29  | INPUT_8       | 디지털 입력 8번
-
-=== 스마트팜 장비 매핑 ===
-채널 | 릴레이핀 | 장비명     | 전류감지   | 설명
------|----------|------------|----------|----------|------------------
-1    | GPIO62   | LED        | GPIO22   | 식물 생장 LED
-2    | GPIO63   | WATERSPRAY | GPIO23   | 물 분무 시스템
-3    | GPIO64   | FAN        | GPIO24   | 환기 팬
-4    | GPIO65   | COOLER     | GPIO25   | 냉각 시스템
-5    | GPIO66   | HEATER     | GPIO26   | -        | 가열 시스템
-6    | GPIO67   | 예비장비1  | GPIO27   | -        | 확장용
-7    | GPIO68   | 예비장비2  | GPIO28   | -        | 확장용
-8    | GPIO69   | 예비장비3  | GPIO29   | -        | 확장용
-*/
-
-/*
-  통신 프로토콜:
-
-  1. 장비 설정 (Raspberry Pi → MPINO):
-  {"cmd":"config","devices":[
-    {"name":"led","relay":62,"current":22},
-    {"name":"waterspray","relay":63,"current":23}
-  ]}
-
-  2. 릴레이 제어 (Raspberry Pi → MPINO):
-  {"cmd":"switch","dev":"waterspray","val":true}
-
-  3. 전류 상태 전송 (MPINO → Raspberry Pi):
-  {"cmd":"current","dev":"led","val":true}
-*/
-
-// 장비 정보 구조체
+// --- 장비 정보 구조체 ---
 struct DeviceInfo {
   String name;
   int relayPin;
   int currentPin;
 };
 
-// 스마트팜 장비 딕셔너리 (동적 할당)
-#define MAX_DEVICES 10
+// --- 전역 변수 ---
 DeviceInfo devices[MAX_DEVICES];
 int DEVICE_COUNT = 0;
 
-// 전류 상태 추적을 위한 전역 변수
 bool lastCurrentValues[MAX_DEVICES] = {false};
 bool initialized[MAX_DEVICES] = {false};
 
-bool statusLedState = false;
+// 시리얼 통신 버퍼
+char serialBuffer[512];
+bool commandReady = false;
 
-// 함수 선언
+// --- 함수 선언 ---
+void checkSerial();
 void processCommand(String cmd);
 void handleJsonCommand(String jsonMessage);
-void handleConfigCommand(DynamicJsonDocument& doc);
 DeviceInfo* findDevice(String deviceName);
 void measureAndSendCurrent();
 void sendResponse(String response);
 
+// =================================================================
+//  설정 (Setup)
+// =================================================================
 void setup() {
   Serial.begin(115200);
-  
-  // 초기화 완료 신호 전송
   sendResponse("{\"cmd\":\"init_complete\",\"status\":\"ready\"}");
-  
+  Serial.println("System Ready.");
 }
 
+// =================================================================
+//  메인 루프 (Loop)
+// =================================================================
 void loop() {
-  // 라즈베리파이로부터 명령 수신 및 처리
-  if (Serial.available()) {
-    // 시리얼 데이터를 한 번에 모두 읽기
-    String command = "";
-    while (Serial.available()) {
-      char c = Serial.read();
-      if (c == '\n' || c == '\r') {
-        break;
-      }
-      command += c;
-    }
-    command.trim();
+  // 1. 라즈베리파이로부터 비동기 명령 수신
+  checkSerial();
 
-    if (command.length() > 0) {
-      Serial.println("Command length: " + String(command.length()));
-      processCommand(command);
-    }
+  // 2. 수신된 명령 처리
+  if (commandReady) {
+    String command = String(serialBuffer);
+    command.trim();
+    Serial.println(">> RECV (" + String(command.length()) + " bytes): " + command);
+    processCommand(command);
+    commandReady = false; // 플래그 초기화
   }
 
-  // 디지털 전류값 측정 및 전송
+  // 3. 주기적으로 디지털 전류값 측정 및 전송
   measureAndSendCurrent();
-
-  delay(50);
 }
 
-// 라즈베리파이 명령 처리
+// =================================================================
+//  라즈베리파이 명령 처리 로직
+// =================================================================
+
+/**
+ * @brief 시리얼 포트를 비동기 방식으로 확인하여 '\n' 문자를 기준으로 명령어를 완성합니다.
+ */
+void checkSerial() {
+  static byte i = 0;
+  while (Serial.available() > 0) {
+    char ch = Serial.read();
+    if (ch != '\n' && ch != '\r' && i < sizeof(serialBuffer) - 1) {
+      serialBuffer[i++] = ch;
+    } else {
+      serialBuffer[i] = '\0'; // 문자열 종료
+      i = 0;
+      if (strlen(serialBuffer) > 0) {
+        commandReady = true;
+      }
+    }
+  }
+}
+
+/**
+ * @brief 수신된 명령이 JSON 형식인지 확인하고 처리 함수를 호출합니다.
+ */
 void processCommand(String cmd) {
-  // JSON 형태 명령 처리만 지원
   if (cmd.startsWith("{")) {
     handleJsonCommand(cmd);
-  }
-  else {
-    sendResponse("{\"status\":\"error\",\"message\":\"only JSON format supported\"}");
+  } else {
+    Serial.println("   ERROR: Non-JSON command ignored.");
+    sendResponse("{\"status\":\"error\",\"message\":\"Only JSON format supported\"}");
   }
 }
 
-// JSON 명령 처리
+/**
+ * @brief JSON 명령을 파싱하고 각 명령에 맞는 핸들러를 실행합니다.
+ */
 void handleJsonCommand(String jsonMessage) {
-  Serial.println("JSON received: " + jsonMessage);
-  DynamicJsonDocument doc(2048);  // 버퍼 크기 증가
+  DynamicJsonDocument doc(512); // JSON 버퍼 크기 최적화
   DeserializationError error = deserializeJson(doc, jsonMessage);
 
   if (error) {
-    Serial.println("JSON parse error: " + String(error.c_str()));
-    sendResponse("{\"status\":\"error\",\"message\":\"json parse error\"}");
+    Serial.println("   ERROR: JSON parse failed - " + String(error.c_str()));
+    sendResponse("{\"status\":\"error\",\"message\":\"JSON parse error: " + String(error.c_str()) + "\"}");
     return;
   }
 
-  // 짧은 형식으로 데이터 추출
   String cmd = doc["cmd"];
 
-  // config 명령 처리 (장비 설정)
-  if (cmd == "config") {
-    handleConfigCommand(doc);
-    return;
-  }
-
-  // config_start 명령 처리
   if (cmd == "config_start") {
-    int count = doc["count"];
-    Serial.println("Config start - " + String(count) + " devices");
     DEVICE_COUNT = 0;
-    // 전류 상태 배열 초기화
     for (int i = 0; i < MAX_DEVICES; i++) {
       lastCurrentValues[i] = false;
       initialized[i] = false;
     }
+    Serial.println("   OK: Device configuration started.");
     sendResponse("{\"status\":\"ok\",\"message\":\"config_started\"}");
-    return;
-  }
 
-  // config_device 명령 처리
-  if (cmd == "config_device") {
+  } else if (cmd == "config_device") {
     int index = doc["index"];
-    String name = doc["name"].as<String>();
-    int relay = doc["relay"];
-    int current = doc["current"];
-
     if (index < MAX_DEVICES) {
-      devices[index].name = name;
-      devices[index].relayPin = relay;
-      devices[index].currentPin = current;
+      devices[index].name = doc["name"].as<String>();
+      devices[index].relayPin = doc["relay"];
+      devices[index].currentPin = doc["current"];
 
-      // 릴레이 핀 설정
-      pinMode(relay, OUTPUT);
-      digitalWrite(relay, LOW);
-
-      // 전류 감지 핀 설정
-      pinMode(current, INPUT_PULLUP);
-
+      pinMode(devices[index].relayPin, OUTPUT);
+      digitalWrite(devices[index].relayPin, LOW);
+      pinMode(devices[index].currentPin, INPUT_PULLUP);
+      
       DEVICE_COUNT = max(DEVICE_COUNT, index + 1);
-      Serial.println("Device " + String(index) + ": " + name + " (relay:" + String(relay) + ", current:" + String(current) + ")");
-      sendResponse("{\"status\":\"ok\",\"device\":\"" + name + "\",\"index\":" + String(index) + "}");
+      Serial.println("   OK: Configured device " + String(index) + " - " + devices[index].name);
+      sendResponse("{\"status\":\"ok\",\"device\":\"" + devices[index].name + "\",\"index\":" + String(index) + "}");
     } else {
+      Serial.println("   ERROR: Device index out of range.");
       sendResponse("{\"status\":\"error\",\"message\":\"index out of range\"}");
     }
-    return;
-  }
 
-  // config_end 명령 처리
-  if (cmd == "config_end") {
-    Serial.println("Config completed: " + String(DEVICE_COUNT) + " devices");
-    sendResponse("{\"status\":\"ok\",\"count\":" + String(DEVICE_COUNT) + "}");
-    return;
-  }
+  } else if (cmd == "config_end") {
+    Serial.println("   OK: Device configuration finished. Total: " + String(DEVICE_COUNT));
+    sendResponse("{\"status\":\"ok\",\"message\":\"config_end\",\"count\":" + String(DEVICE_COUNT) + "}");
 
-  // switch 명령 처리 (릴레이 제어)
-  if (cmd == "switch") {
+  } else if (cmd == "switch") {
     String deviceName = doc["dev"];
     bool value = doc["val"];
-
-    // 장비 딕셔너리에서 장비 정보 찾기
     DeviceInfo* device = findDevice(deviceName);
     if (device != nullptr) {
       digitalWrite(device->relayPin, value ? HIGH : LOW);
-      
-      // 응답 전송
+      Serial.println("   OK: Switched " + deviceName + " -> " + (value ? "ON" : "OFF"));
       sendResponse("{\"status\":\"ok\",\"device\":\"" + deviceName + "\",\"value\":" + String(value ? "true" : "false") + "}");
     } else {
-      sendResponse("{\"status\":\"error\",\"message\":\"unknown device: " + deviceName + "\"}");
-    }
-    return;
-  }
-
-  // 알 수 없는 명령
-  sendResponse("{\"status\":\"error\",\"message\":\"unknown command: " + cmd + "\"}");
-}
-
-// config 명령 처리 (장비 동적 설정)
-void handleConfigCommand(DynamicJsonDocument& doc) {
-  Serial.println("Config command received");
-  JsonArray devicesArray = doc["devices"];
-
-  if (devicesArray.isNull()) {
-    Serial.println("Error: devices array is null");
-    sendResponse("{\"status\":\"error\",\"message\":\"devices array required\"}");
-    return;
-  }
-
-  // 기존 장비 초기화
-  DEVICE_COUNT = 0;
-  
-  // 전류 상태 배열 초기화
-  for (int i = 0; i < MAX_DEVICES; i++) {
-    lastCurrentValues[i] = false;
-    initialized[i] = false;
-  }
-
-  // 새로운 장비 설정
-  Serial.println("Processing " + String(devicesArray.size()) + " devices");
-  for (JsonObject deviceObj : devicesArray) {
-    if (DEVICE_COUNT >= MAX_DEVICES) {
-      break;
+      Serial.println("   ERROR: Unknown device name '" + deviceName + "'");
+      sendResponse("{\"status\":\"error\",\"message\":\"Unknown device: " + deviceName + "\"}");
     }
 
-    String name = deviceObj["name"].as<String>();
-    int relay = deviceObj["relay"];
-    int current = deviceObj["current"];
-
-    Serial.println("Device " + String(DEVICE_COUNT) + ": " + name + " (relay:" + String(relay) + ", current:" + String(current) + ")");
-
-    devices[DEVICE_COUNT].name = name;
-    devices[DEVICE_COUNT].relayPin = relay;
-    devices[DEVICE_COUNT].currentPin = current;
-
-    // 릴레이 핀 설정
-    pinMode(relay, OUTPUT);
-    digitalWrite(relay, LOW);
-
-    // 전류 감지 핀 설정
-    pinMode(current, INPUT_PULLUP);
-
-    DEVICE_COUNT++;
+  } else {
+    Serial.println("   ERROR: Unknown command '" + cmd + "'");
+    sendResponse("{\"status\":\"error\",\"message\":\"Unknown command: " + cmd + "\"}");
   }
-
-  Serial.println("Config completed: " + String(DEVICE_COUNT) + " devices");
-  sendResponse("{\"status\":\"ok\",\"count\":" + String(DEVICE_COUNT) + "}");
 }
 
-// 장비 딕셔너리에서 장비 찾기
+// =================================================================
+//  유틸리티 함수
+// =================================================================
+
+/**
+ * @brief 장비 이름으로 장비 정보를 찾습니다.
+ * @return 찾은 DeviceInfo 포인터, 없으면 nullptr
+ */
 DeviceInfo* findDevice(String deviceName) {
   for (int i = 0; i < DEVICE_COUNT; i++) {
     if (devices[i].name == deviceName) {
       return &devices[i];
     }
   }
-  return nullptr; // 장비를 찾지 못함
+  return nullptr;
 }
 
-
-
-// 디지털 전류값 측정 및 전송
+/**
+ * @brief 주기적으로 모든 장비의 전류 상태를 확인하고, 상태 변경 시 라즈베리파이로 전송합니다.
+ */
 void measureAndSendCurrent() {
-  static unsigned long lastCurrentCheck = 0;
-  
-  // 2초마다 전류값 측정
-  if (millis() - lastCurrentCheck < 2000) return;
-  lastCurrentCheck = millis();
-  
-  // 장비 딕셔너리를 사용하여 전류 측정 (24V 디지털 입력)
+  static unsigned long lastCheck = 0;
+  if (millis() - lastCheck < CURRENT_CHECK_INTERVAL) return;
+  lastCheck = millis();
+
   for (int i = 0; i < DEVICE_COUNT; i++) {
     bool currentState = digitalRead(devices[i].currentPin);
-
-    // 초기화 또는 상태 변화 시 전송
     if (!initialized[i] || currentState != lastCurrentValues[i]) {
       initialized[i] = true;
       lastCurrentValues[i] = currentState;
 
-      // 짧은 JSON 형태로 전류 상태 전송
-      DynamicJsonDocument currentDoc(128);
-      currentDoc["cmd"] = "current";
-      currentDoc["dev"] = devices[i].name;
-      currentDoc["val"] = currentState;
+      DynamicJsonDocument doc(128);
+      doc["cmd"] = "current";
+      doc["dev"] = devices[i].name;
+      doc["val"] = currentState;
 
       String currentData;
-      serializeJson(currentDoc, currentData);
+      serializeJson(doc, currentData);
       sendResponse(currentData);
+      Serial.println("   SENT: Current status for " + devices[i].name + " -> " + (currentState ? "ON" : "OFF"));
     }
   }
 }
 
-// 응답 전송 유틸리티
+/**
+ * @brief 라즈베리파이로 응답 메시지를 전송합니다.
+ */
 void sendResponse(String response) {
   Serial.println(response);
   Serial.flush();
 }
-
