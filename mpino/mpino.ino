@@ -88,32 +88,25 @@ void sendResponse(String response);
 
 void setup() {
   Serial.begin(115200);
-  Serial3.begin(115200);
-  Serial3.setTimeout(2000); // 2초 타임아웃 설정
+  // Serial3가 없는 경우 Serial 사용
+  // Serial3.begin(115200);
+  // Serial3.setTimeout(2000);
   
   pinMode(LED_STATUS, OUTPUT);
   digitalWrite(LED_STATUS, HIGH);
   
-  Serial.println("=== MPINO-16A8R8T PlantPoint 제어 시스템 ===");
-  Serial.println("버전: 3.0 (동적 장비 설정 지원)");
-  Serial.println("릴레이 출력: R62-R69 (8채널)");
-  Serial.println("디지털 입력: I22-I29 (8채널)");
-  Serial.println("최대 장비 수: " + String(MAX_DEVICES));
-  Serial.println("");
-  Serial.println("장비 설정 대기 중... (config 명령 필요)");
-  Serial.println("MPINO 초기화 완료 - " + String(millis()) + "ms");
+  // 초기화 완료 (디버깅용)
+  Serial.println("MPINO 초기화 완료");
   
 }
 
 void loop() {
   // 라즈베리파이로부터 명령 수신 및 처리
-  if (Serial3.available()) {
-    delay(100); // 대기 시간 단축
-    String command = Serial3.readStringUntil('\n');
+  if (Serial.available()) {
+    String command = Serial.readStringUntil('\n');
     command.trim();
 
     if (command.length() > 0) {
-      Serial.println("라즈베리파이 명령 수신 (" + String(command.length()) + "자): " + command);
       processCommand(command);
     }
   }
@@ -131,7 +124,6 @@ void processCommand(String cmd) {
     handleJsonCommand(cmd);
   }
   else {
-    Serial.println("JSON 형태가 아닌 명령: " + cmd);
     sendResponse("{\"status\":\"error\",\"message\":\"only JSON format supported\"}");
   }
 }
@@ -142,7 +134,6 @@ void handleJsonCommand(String jsonMessage) {
   DeserializationError error = deserializeJson(doc, jsonMessage);
 
   if (error) {
-    Serial.println("JSON 파싱 실패: " + String(error.c_str()));
     sendResponse("{\"status\":\"error\",\"message\":\"json parse error\"}");
     return;
   }
@@ -161,26 +152,20 @@ void handleJsonCommand(String jsonMessage) {
     String deviceName = doc["dev"];
     bool value = doc["val"];
 
-    Serial.println("JSON 수신 - 장비: " + deviceName + ", 값: " + String(value ? "ON" : "OFF"));
-
     // 장비 딕셔너리에서 장비 정보 찾기
     DeviceInfo* device = findDevice(deviceName);
     if (device != nullptr) {
       digitalWrite(device->relayPin, value ? HIGH : LOW);
-
-      Serial.println("릴레이 R" + String(device->relayPin) + " (" + device->name + ") " + String(value ? "ON" : "OFF"));
       
       // 응답 전송
       sendResponse("{\"status\":\"ok\",\"device\":\"" + deviceName + "\",\"value\":" + String(value ? "true" : "false") + "}");
     } else {
-      Serial.println("알 수 없는 장비: " + deviceName);
       sendResponse("{\"status\":\"error\",\"message\":\"unknown device: " + deviceName + "\"}");
     }
     return;
   }
 
   // 알 수 없는 명령
-  Serial.println("알 수 없는 명령: " + cmd);
   sendResponse("{\"status\":\"error\",\"message\":\"unknown command: " + cmd + "\"}");
 }
 
@@ -189,7 +174,6 @@ void handleConfigCommand(DynamicJsonDocument& doc) {
   JsonArray devicesArray = doc["devices"];
 
   if (devicesArray.isNull()) {
-    Serial.println("config 명령 오류: devices 배열 없음");
     sendResponse("{\"status\":\"error\",\"message\":\"devices array required\"}");
     return;
   }
@@ -206,7 +190,6 @@ void handleConfigCommand(DynamicJsonDocument& doc) {
   // 새로운 장비 설정
   for (JsonObject deviceObj : devicesArray) {
     if (DEVICE_COUNT >= MAX_DEVICES) {
-      Serial.println("경고: 최대 장비 수 초과");
       break;
     }
 
@@ -225,11 +208,9 @@ void handleConfigCommand(DynamicJsonDocument& doc) {
     // 전류 감지 핀 설정
     pinMode(current, INPUT_PULLUP);
 
-    Serial.println("장비 추가: " + name + " (릴레이:" + String(relay) + ", 전류:" + String(current) + ")");
     DEVICE_COUNT++;
   }
 
-  Serial.println("장비 설정 완료: " + String(DEVICE_COUNT) + "개");
   sendResponse("{\"status\":\"ok\",\"count\":" + String(DEVICE_COUNT) + "}");
 }
 
@@ -271,14 +252,13 @@ void measureAndSendCurrent() {
       String currentData;
       serializeJson(currentDoc, currentData);
       sendResponse(currentData);
-      Serial.println("디지털 전류 " + devices[i].name + " (핀" + String(devices[i].currentPin) + "): " + String(currentState ? "ON" : "OFF"));
     }
   }
 }
 
 // 응답 전송 유틸리티
 void sendResponse(String response) {
-  Serial3.println(response);
-  Serial3.flush();
+  Serial.println(response);
+  Serial.flush();
 }
 
