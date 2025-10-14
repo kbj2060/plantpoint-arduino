@@ -294,16 +294,11 @@ def fetch_devices_from_backend():
                 device_id = device.get('id')
                 device_name = device.get('name')
                 
-                # 해당 디바이스의 current 정보 찾기
+                # 해당 디바이스의 current 정보 찾기 (device 이름으로 매칭)
                 current_info = None
                 for current in currents_data:
-                    current_device_id = current.get('device_id')
-                    # device_id가 객체인 경우와 숫자인 경우 모두 처리
-                    if isinstance(current_device_id, dict):
-                        if current_device_id.get('id') == device_id:
-                            current_info = current
-                            break
-                    elif current_device_id == device_id:
+                    current_device_name = current.get('device')
+                    if current_device_name == device_name:
                         current_info = current
                         break
                 
