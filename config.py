@@ -119,6 +119,7 @@ class BackendConfig:
     """PlantPoint Backend API 설정"""
     BASE_URL = os.getenv('BACKEND_URL', 'http://172.30.1.38:3000/api')
     REPORT_ENDPOINT = '/reports/create'
-    DEVICES_ENDPOINT = '/devices'  # 장비 목록 조회
+    DEVICES_ENDPOINT = '/device/all'  # 장비 목록 조회 (인증 필요)
+    CURRENTS_ENDPOINT = '/current/read-all'  # 전류 센서 목록 조회 (인증 불필요)
     USERNAME = os.getenv('BACKEND_USERNAME', 'llewyn')  # 백엔드 인증용 사용자명
     PASSWORD = os.getenv('BACKEND_PASSWORD', '1234')  # 백엔드 인증용 비밀번호

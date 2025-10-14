@@ -273,8 +273,59 @@ def fetch_devices_from_backend():
         if response.status_code == 200:
             all_devices = response.json()
             # type이 'machine'인 장비만 필터링
-            devices_data = [d for d in all_devices if d.get('type') == 'machine']
-            logging.info("Fetched %d machine devices from backend (total: %d)", len(devices_data), len(all_devices))
+            machine_devices = [d for d in all_devices if d.get('type') == 'machine']
+            logging.info("Fetched %d machine devices from backend (total: %d)", len(machine_devices), len(all_devices))
+
+            # Current 센서 정보 조회 (인증 불필요)
+            currents_url = f"{BackendConfig.BASE_URL}{BackendConfig.CURRENTS_ENDPOINT}"
+            logging.info("Fetching currents from backend: %s", currents_url)
+            currents_response = requests.get(currents_url, timeout=10)
+
+            currents_data = []
+            if currents_response.status_code == 200:
+                currents_data = currents_response.json()
+                logging.info("Fetched %d current sensors from backend", len(currents_data))
+            else:
+                logging.warning("Failed to fetch currents: HTTP %d - %s", currents_response.status_code, currents_response.text)
+
+            # machine 디바이스와 current 정보를 매칭하여 조합
+            devices_data = []
+            for device in machine_devices:
+                device_id = device.get('id')
+                device_name = device.get('name')
+                
+                # 해당 디바이스의 current 정보 찾기
+                current_info = None
+                for current in currents_data:
+                    current_device_id = current.get('device_id')
+                    # device_id가 객체인 경우와 숫자인 경우 모두 처리
+                    if isinstance(current_device_id, dict):
+                        if current_device_id.get('id') == device_id:
+                            current_info = current
+                            break
+                    elif current_device_id == device_id:
+                        current_info = current
+                        break
+                
+                # Current 정보가 있으면 사용, 없으면 기본값 사용
+                current_pin = None
+                if current_info and current_info.get('pin') is not None:
+                    current_pin = current_info.get('pin')
+                    logging.info("Found current pin for %s: %d", device_name, current_pin)
+                else:
+                    current_pin = device.get('pin', 0) + 10  # 기본값: relay_pin + 10
+                    logging.warning("No current pin found for %s, using default: %d", device_name, current_pin)
+                
+                device_data = {
+                    'id': device_id,
+                    'name': device_name,
+                    'type': device.get('type'),
+                    'relay_pin': device.get('pin'),
+                    'current_pin': current_pin
+                }
+                devices_data.append(device_data)
+
+            logging.info("Combined %d machine devices with current information", len(devices_data))
             return devices_data
         else:
             logging.error("Failed to fetch devices: HTTP %d - %s", response.status_code, response.text)
@@ -321,10 +372,16 @@ def send_config_to_mpino(ser, devices_data):
             logging.warning("Device missing required fields: %s", device)
             continue
 
+        # current_pin이 유효한 값인지 확인
+        current_pin = device.get('current_pin')
+        if current_pin is None or current_pin <= 0:
+            logging.warning("Device %s has invalid current_pin: %s, skipping", device['name'], current_pin)
+            continue
+        
         mpino_devices.append({
             "name": device['name'],
             "relay": device['relay_pin'],
-            "current": device['current_pin']
+            "current": current_pin
         })
 
     if not mpino_devices:
