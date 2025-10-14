@@ -12,7 +12,6 @@
 
 핀 번호 | 기능          | 설명
 --------|---------------|------------------
-GPIO13  | LED_STATUS    | 시스템 상태 LED
 GPIO62  | RELAY_1       | 출력 릴레이 1번
 GPIO63  | RELAY_2       | 출력 릴레이 2번
 GPIO64  | RELAY_3       | 출력 릴레이 3번
@@ -58,7 +57,6 @@ GPIO29  | INPUT_8       | 디지털 입력 8번
   3. 전류 상태 전송 (MPINO → Raspberry Pi):
   {"cmd":"current","dev":"led","val":true}
 */
-#define LED_STATUS 13
 
 // 장비 정보 구조체
 struct DeviceInfo {
@@ -88,15 +86,9 @@ void sendResponse(String response);
 
 void setup() {
   Serial.begin(115200);
-  // Serial3가 없는 경우 Serial 사용
-  // Serial3.begin(115200);
-  // Serial3.setTimeout(2000);
   
-  pinMode(LED_STATUS, OUTPUT);
-  digitalWrite(LED_STATUS, HIGH);
-  
-  // 초기화 완료 (디버깅용)
-  Serial.println("MPINO 초기화 완료");
+  // 초기화 완료 신호 전송
+  sendResponse("{\"cmd\":\"init_complete\",\"status\":\"ready\"}");
   
 }
 

@@ -21,7 +21,7 @@ import paho.mqtt.client as mqtt
 import serial
 import requests
 from config import MQTTConfig, SerialConfig, LoggingConfig, BackendConfig
-
+import json
 logging.basicConfig(level=getattr(logging, LoggingConfig.LEVEL), format=LoggingConfig.FORMAT)
 
 # 마지막 상태를 저장하여 변경사항만 출력
@@ -444,6 +444,31 @@ def main():
     # 전역 serial_port 설정 (device update 핸들러에서 사용)
     serial_port = ser
 
+    # Arduino 초기화 완료 신호 대기
+    logging.info("Waiting for Arduino initialization signal...")
+    arduino_ready = False
+    
+    while not arduino_ready:
+        if ser.in_waiting > 0:
+            data = ser.read(ser.in_waiting).decode('utf-8', errors='ignore')
+            lines = data.strip().split('\n')
+            for line in lines:
+                line = line.strip()
+                if line:
+                    logging.debug("Received during init: %s", line)
+                    # init_complete 신호 확인
+                    try:
+                        msg = json.loads(line)
+                        if msg.get('cmd') == 'init_complete' and msg.get('status') == 'ready':
+                            logging.info("Arduino initialization completed - ready for config")
+                            arduino_ready = True
+                            break
+                    except:
+                        pass
+            if arduino_ready:
+                break
+        time.sleep(1)
+    
     # 백엔드에서 장비 정보 가져오기 및 MPINO 설정 (인증 포함)
     devices_data = fetch_devices_from_backend()
     if devices_data:
