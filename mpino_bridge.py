@@ -302,14 +302,13 @@ def fetch_devices_from_backend():
                         current_info = current
                         break
                 
-                # Current 정보가 있으면 사용, 없으면 기본값 사용
-                current_pin = None
+                # Current 정보가 있으면 사용, 없으면 0으로 설정
+                current_pin = 0
                 if current_info and current_info.get('pin') is not None:
                     current_pin = current_info.get('pin')
                     logging.info("Found current pin for %s: %d", device_name, current_pin)
                 else:
-                    current_pin = device.get('pin', 0) + 10  # 기본값: relay_pin + 10
-                    logging.warning("No current pin found for %s, using default: %d", device_name, current_pin)
+                    logging.warning("No current pin found for %s, using 0", device_name)
                 
                 device_data = {
                     'id': device_id,
@@ -367,11 +366,11 @@ def send_config_to_mpino(ser, devices_data):
             logging.warning("Device missing required fields: %s", device)
             continue
 
-        # current_pin이 유효한 값인지 확인
+        # current_pin이 유효한 값인지 확인 (0은 허용)
         current_pin = device.get('current_pin')
-        if current_pin is None or current_pin <= 0:
-            logging.warning("Device %s has invalid current_pin: %s, skipping", device['name'], current_pin)
-            continue
+        if current_pin is None:
+            logging.warning("Device %s has no current_pin, using 0", device['name'])
+            current_pin = 0
         
         mpino_devices.append({
             "name": device['name'],

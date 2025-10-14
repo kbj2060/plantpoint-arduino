@@ -68,11 +68,23 @@ struct DeviceInfo {
 };
 
 // 스마트팜 장비 딕셔너리 (동적 할당)
-#define MAX_DEVICES 8
+#define MAX_DEVICES 10
 DeviceInfo devices[MAX_DEVICES];
 int DEVICE_COUNT = 0;
 
+// 전류 상태 추적을 위한 전역 변수
+bool lastCurrentValues[MAX_DEVICES] = {false};
+bool initialized[MAX_DEVICES] = {false};
+
 bool statusLedState = false;
+
+// 함수 선언
+void processCommand(String cmd);
+void handleJsonCommand(String jsonMessage);
+void handleConfigCommand(DynamicJsonDocument& doc);
+DeviceInfo* findDevice(String deviceName);
+void measureAndSendCurrent();
+void sendResponse(String response);
 
 void setup() {
   Serial.begin(115200);
@@ -184,6 +196,12 @@ void handleConfigCommand(DynamicJsonDocument& doc) {
 
   // 기존 장비 초기화
   DEVICE_COUNT = 0;
+  
+  // 전류 상태 배열 초기화
+  for (int i = 0; i < MAX_DEVICES; i++) {
+    lastCurrentValues[i] = false;
+    initialized[i] = false;
+  }
 
   // 새로운 장비 설정
   for (JsonObject deviceObj : devicesArray) {
@@ -230,8 +248,6 @@ DeviceInfo* findDevice(String deviceName) {
 // 디지털 전류값 측정 및 전송
 void measureAndSendCurrent() {
   static unsigned long lastCurrentCheck = 0;
-  static bool lastCurrentValues[DEVICE_COUNT] = {false};
-  static bool initialized[DEVICE_COUNT] = {false};
   
   // 2초마다 전류값 측정
   if (millis() - lastCurrentCheck < 2000) return;
