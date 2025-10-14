@@ -88,7 +88,7 @@ void sendResponse(String response);
 
 void setup() {
   Serial.begin(115200);
-  Serial3.begin(9600);
+  Serial3.begin(115200);
   Serial3.setTimeout(2000); // 2초 타임아웃 설정
   
   pinMode(LED_STATUS, OUTPUT);

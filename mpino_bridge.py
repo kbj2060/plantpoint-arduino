@@ -122,6 +122,7 @@ def serial_reader_loop(ser):
             if not data:
                 time.sleep(0.01)
                 continue
+            logging.debug("Raw serial data received: %s", data)  # 원시 데이터 로깅
             try:
                 s = data.decode('utf-8', errors='ignore')
             except Exception:
@@ -132,7 +133,7 @@ def serial_reader_loop(ser):
                 line = line.strip()
                 if not line:
                     continue
-                logging.debug("Serial recv: %s", line)
+                logging.info("Serial recv: %s", line)  # debug → info로 변경
                 process_serial_line(line)
         except Exception as e:
             if shutdown_flag:
