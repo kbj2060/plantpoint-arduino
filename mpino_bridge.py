@@ -189,7 +189,6 @@ def serial_writer_loop(ser):
                 continue
             logging.info("Serial send: %s", line.strip())
             ser.write(line.encode('utf-8'))
-            ser.flush()
         except queue.Empty:
             continue
         except Exception as e:
@@ -398,8 +397,6 @@ def send_config_to_mpino(ser, devices_data):
     try:
         logging.info("Sending config to MPINO: %s", config_line.strip())
         ser.write(config_line.encode('utf-8'))
-        ser.flush()
-        time.sleep(2)  # MPINO가 설정을 처리할 시간 대기
         
         # MPINO 응답 확인
         if ser.in_waiting > 0:

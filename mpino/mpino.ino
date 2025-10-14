@@ -95,10 +95,19 @@ void setup() {
 void loop() {
   // 라즈베리파이로부터 명령 수신 및 처리
   if (Serial.available()) {
-    String command = Serial.readStringUntil('\n');
+    // 시리얼 데이터를 한 번에 모두 읽기
+    String command = "";
+    while (Serial.available()) {
+      char c = Serial.read();
+      if (c == '\n' || c == '\r') {
+        break;
+      }
+      command += c;
+    }
     command.trim();
 
     if (command.length() > 0) {
+      Serial.println("Command length: " + String(command.length()));
       processCommand(command);
     }
   }
@@ -122,10 +131,12 @@ void processCommand(String cmd) {
 
 // JSON 명령 처리
 void handleJsonCommand(String jsonMessage) {
-  DynamicJsonDocument doc(1024);
+  Serial.println("JSON received: " + jsonMessage);
+  DynamicJsonDocument doc(2048);  // 버퍼 크기 증가
   DeserializationError error = deserializeJson(doc, jsonMessage);
 
   if (error) {
+    Serial.println("JSON parse error: " + String(error.c_str()));
     sendResponse("{\"status\":\"error\",\"message\":\"json parse error\"}");
     return;
   }
@@ -136,6 +147,55 @@ void handleJsonCommand(String jsonMessage) {
   // config 명령 처리 (장비 설정)
   if (cmd == "config") {
     handleConfigCommand(doc);
+    return;
+  }
+
+  // config_start 명령 처리
+  if (cmd == "config_start") {
+    int count = doc["count"];
+    Serial.println("Config start - " + String(count) + " devices");
+    DEVICE_COUNT = 0;
+    // 전류 상태 배열 초기화
+    for (int i = 0; i < MAX_DEVICES; i++) {
+      lastCurrentValues[i] = false;
+      initialized[i] = false;
+    }
+    sendResponse("{\"status\":\"ok\",\"message\":\"config_started\"}");
+    return;
+  }
+
+  // config_device 명령 처리
+  if (cmd == "config_device") {
+    int index = doc["index"];
+    String name = doc["name"].as<String>();
+    int relay = doc["relay"];
+    int current = doc["current"];
+
+    if (index < MAX_DEVICES) {
+      devices[index].name = name;
+      devices[index].relayPin = relay;
+      devices[index].currentPin = current;
+
+      // 릴레이 핀 설정
+      pinMode(relay, OUTPUT);
+      digitalWrite(relay, LOW);
+
+      // 전류 감지 핀 설정
+      pinMode(current, INPUT_PULLUP);
+
+      DEVICE_COUNT = max(DEVICE_COUNT, index + 1);
+      Serial.println("Device " + String(index) + ": " + name + " (relay:" + String(relay) + ", current:" + String(current) + ")");
+      sendResponse("{\"status\":\"ok\",\"device\":\"" + name + "\",\"index\":" + String(index) + "}");
+    } else {
+      sendResponse("{\"status\":\"error\",\"message\":\"index out of range\"}");
+    }
+    return;
+  }
+
+  // config_end 명령 처리
+  if (cmd == "config_end") {
+    Serial.println("Config completed: " + String(DEVICE_COUNT) + " devices");
+    sendResponse("{\"status\":\"ok\",\"count\":" + String(DEVICE_COUNT) + "}");
     return;
   }
 
@@ -163,9 +223,11 @@ void handleJsonCommand(String jsonMessage) {
 
 // config 명령 처리 (장비 동적 설정)
 void handleConfigCommand(DynamicJsonDocument& doc) {
+  Serial.println("Config command received");
   JsonArray devicesArray = doc["devices"];
 
   if (devicesArray.isNull()) {
+    Serial.println("Error: devices array is null");
     sendResponse("{\"status\":\"error\",\"message\":\"devices array required\"}");
     return;
   }
@@ -180,6 +242,7 @@ void handleConfigCommand(DynamicJsonDocument& doc) {
   }
 
   // 새로운 장비 설정
+  Serial.println("Processing " + String(devicesArray.size()) + " devices");
   for (JsonObject deviceObj : devicesArray) {
     if (DEVICE_COUNT >= MAX_DEVICES) {
       break;
@@ -188,6 +251,8 @@ void handleConfigCommand(DynamicJsonDocument& doc) {
     String name = deviceObj["name"].as<String>();
     int relay = deviceObj["relay"];
     int current = deviceObj["current"];
+
+    Serial.println("Device " + String(DEVICE_COUNT) + ": " + name + " (relay:" + String(relay) + ", current:" + String(current) + ")");
 
     devices[DEVICE_COUNT].name = name;
     devices[DEVICE_COUNT].relayPin = relay;
@@ -203,6 +268,7 @@ void handleConfigCommand(DynamicJsonDocument& doc) {
     DEVICE_COUNT++;
   }
 
+  Serial.println("Config completed: " + String(DEVICE_COUNT) + " devices");
   sendResponse("{\"status\":\"ok\",\"count\":" + String(DEVICE_COUNT) + "}");
 }
 
