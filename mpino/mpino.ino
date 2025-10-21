@@ -261,8 +261,10 @@ void handleConfigCommand(DynamicJsonDocument& doc) {
     devices[DEVICE_COUNT].currentPin = current;
 
     // 릴레이 핀 설정
-    pinMode(relay, OUTPUT);
-    digitalWrite(relay, LOW);
+    if (relay != 0) { 
+      pinMode(relay, OUTPUT);
+      digitalWrite(relay, LOW);
+    }
 
     // 전류 감지 핀 설정
     pinMode(current, INPUT_PULLUP);
