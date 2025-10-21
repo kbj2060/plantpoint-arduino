@@ -41,6 +41,7 @@ logging.info("Configuration: SERIAL_DEV=%s, BAUD=%d, MQTT_HOST=%s, MQTT_PORT=%d"
 MQTT_SWITCH_WILDCARD = MQTTConfig.SWITCH_WILDCARD
 TOPIC_CURRENT_PREFIX = MQTTConfig.TOPIC_CURRENT_PREFIX
 TOPIC_SWITCH_PREFIX = MQTTConfig.TOPIC_SWITCH_PREFIX
+TOPIC_ENVIRONMENT_PREFIX = MQTTConfig.TOPIC_ENVIRONMENT_PREFIX
 TOPIC_DEVICE_UPDATE = MQTTConfig.TOPIC_DEVICE_UPDATE
 TOPIC_RAW = "mpino/raw"
 STATUS_TOPIC = f"{MQTTConfig.TOPIC_STATUS_PREFIX}/mpino_bridge_strict"
@@ -178,6 +179,20 @@ def process_serial_line(line):
             logging.debug("No change for switch %s (still %s)", dev, val)
         return
 
+    if cmd == "environment" and isinstance(dev, str):
+        # 센서값은 변경 여부 상관없이 바로 발행
+        state_key = f"environment/{dev}"
+        last_states[state_key] = val
+        # MPINO 형식에 맞춰 발행: {"pattern":"environment/dev","data":{"name":"dev","value":val}}
+        payload = {
+            "pattern": f"environment/{dev}",
+            "data": {"name": dev, "value": val}
+        }
+        topic = f"{TOPIC_ENVIRONMENT_PREFIX}/{dev}"
+        client.publish(topic, json.dumps(payload))
+        logging.info("Published %s -> %s", topic, payload)
+        return
+
     logging.warning("Ignored serial JSON with unknown/unsupported cmd: %s", cmd)
 
 def serial_writer_loop(ser):
@@ -255,26 +270,26 @@ def get_auth_token():
         return None
 
 def fetch_devices_from_backend():
-    """백엔드에서 장비 목록 및 핀 설정을 가져옴 (machine만)"""
+    """백엔드에서 장비 목록 및 핀 설정을 가져옴 (machine과 waterlevel 센서)"""
     try:
         # 인증 토큰 가져오기
         token = get_auth_token()
         if not token:
             logging.error("Failed to get auth token")
             return []
-        
+
         # 인증 헤더 설정
         headers = {'Authorization': f'Bearer {token}'}
-        
+
         devices_url = f"{BackendConfig.BASE_URL}{BackendConfig.DEVICES_ENDPOINT}"
         logging.info("Fetching devices from backend: %s", devices_url)
         response = requests.get(devices_url, headers=headers, timeout=10)
 
         if response.status_code == 200:
             all_devices = response.json()
-            # type이 'machine'인 장비만 필터링
-            machine_devices = [d for d in all_devices if d.get('type') == 'machine']
-            logging.info("Fetched %d machine devices from backend (total: %d)", len(machine_devices), len(all_devices))
+            # type이 'machine'이거나 name이 'waterlevel'인 센서만 필터링
+            filtered_devices = [d for d in all_devices if d.get('type') == 'machine' or d.get('name') == 'waterlevel']
+            logging.info("Fetched %d devices (machines + waterlevel) from backend (total: %d)", len(filtered_devices), len(all_devices))
 
             # Current 센서 정보 조회 (인증 불필요)
             currents_url = f"{BackendConfig.BASE_URL}{BackendConfig.CURRENTS_ENDPOINT}"
@@ -288,38 +303,51 @@ def fetch_devices_from_backend():
             else:
                 logging.warning("Failed to fetch currents: HTTP %d - %s", currents_response.status_code, currents_response.text)
 
-            # machine 디바이스와 current 정보를 매칭하여 조합
+            # 디바이스와 current/sensor 정보를 매칭하여 조합
             devices_data = []
-            for device in machine_devices:
+            for device in filtered_devices:
                 device_id = device.get('id')
                 device_name = device.get('name')
-                
-                # 해당 디바이스의 current 정보 찾기 (device 이름으로 매칭)
-                current_info = None
-                for current in currents_data:
-                    current_device_name = current.get('device')
-                    if current_device_name == device_name:
-                        current_info = current
-                        break
-                
-                # Current 정보가 있으면 사용, 없으면 0으로 설정
-                current_pin = 0
-                if current_info and current_info.get('pin') is not None:
-                    current_pin = current_info.get('pin')
-                    logging.info("Found current pin for %s: %d", device_name, current_pin)
+                device_type = device.get('type')
+
+                # machine 타입: current 정보 찾기
+                if device_type == 'machine':
+                    current_info = None
+                    for current in currents_data:
+                        current_device_name = current.get('device')
+                        if current_device_name == device_name:
+                            current_info = current
+                            break
+
+                    # Current 정보가 있으면 사용, 없으면 0으로 설정
+                    sensor_pin = 0
+                    if current_info and current_info.get('pin') is not None:
+                        sensor_pin = current_info.get('pin')
+                        logging.info("Found current pin for %s: %d", device_name, sensor_pin)
+                    else:
+                        logging.warning("No current pin found for %s, using 0", device_name)
+
+                    device_data = {
+                        'id': device_id,
+                        'name': device_name,
+                        'type': device_type,
+                        'relay_pin': device.get('pin'),
+                        'sensor_pin': sensor_pin
+                    }
+                # sensor 타입 (waterlevel): relay 없이 sensor pin만
                 else:
-                    logging.warning("No current pin found for %s, using 0", device_name)
-                
-                device_data = {
-                    'id': device_id,
-                    'name': device_name,
-                    'type': device.get('type'),
-                    'relay_pin': device.get('pin'),
-                    'current_pin': current_pin
-                }
+                    device_data = {
+                        'id': device_id,
+                        'name': device_name,
+                        'type': device_type,
+                        'relay_pin': 0,
+                        'sensor_pin': device.get('pin', 0)
+                    }
+                    logging.info("Found sensor %s with pin %d", device_name, device.get('pin', 0))
+
                 devices_data.append(device_data)
 
-            logging.info("Combined %d machine devices with current information", len(devices_data))
+            logging.info("Combined %d devices (machines + sensors) with pin information", len(devices_data))
             return devices_data
         else:
             logging.error("Failed to fetch devices: HTTP %d - %s", response.status_code, response.text)
@@ -362,24 +390,25 @@ def send_config_to_mpino(ser, devices_data):
     mpino_devices = []
     for device in devices_data:
         # 필수 필드 확인
-        if not all(key in device for key in ['name', 'relay_pin', 'current_pin']):
+        if not all(key in device for key in ['name', 'type', 'relay_pin', 'sensor_pin']):
             logging.warning("Device missing required fields: %s", device)
             continue
 
-        # current_pin이 유효한 값인지 확인 (0은 허용)
-        current_pin = device.get('current_pin')
-        if current_pin is None:
-            logging.warning("Device %s has no current_pin, using 0", device['name'])
-            current_pin = 0
-        
+        # sensor_pin이 유효한 값인지 확인 (0은 허용)
+        sensor_pin = device.get('sensor_pin')
+        if sensor_pin is None:
+            logging.warning("Device %s has no sensor_pin, using 0", device['name'])
+            sensor_pin = 0
+
         mpino_devices.append({
             "name": device['name'],
+            "type": device['type'],
             "relay": device['relay_pin'],
-            "current": current_pin
+            "sensor": sensor_pin
         })
-        
-        logging.info("Device %s: relay=%d, current=%d", 
-                    device['name'], device['relay_pin'], current_pin)
+
+        logging.info("Device %s (type=%s): relay=%d, sensor=%d",
+                    device['name'], device['type'], device['relay_pin'], sensor_pin)
 
     if not mpino_devices:
         logging.error("No valid devices to configure")

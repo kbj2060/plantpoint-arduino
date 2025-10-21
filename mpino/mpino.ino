@@ -61,8 +61,9 @@ GPIO29  | INPUT_8       | 디지털 입력 8번
 // 장비 정보 구조체
 struct DeviceInfo {
   String name;
-  int relayPin;
-  int currentPin;
+  String type;      // "machine" 또는 "sensor"
+  int relayPin;     // machine만 사용
+  int sensorPin;    // machine의 경우 currentPin, sensor의 경우 센서 입력 핀
 };
 
 // 스마트팜 장비 딕셔너리 (동적 할당)
@@ -87,6 +88,7 @@ void handleJsonCommand(String jsonMessage);
 void handleConfigCommand(DynamicJsonDocument& doc);
 DeviceInfo* findDevice(String deviceName);
 void measureAndSendCurrent();
+void measureAndSendEnvironment();
 void sendResponse(String response);
 
 void setup() {
@@ -108,8 +110,11 @@ void loop() {
     commandReady = false; // 플래그 초기화
   }
 
-  // 3. 주기적으로 디지털 전류값 측정 및 전송
+  // 3. 주기적으로 디지털 전류값 측정 및 전송 (machine만)
   measureAndSendCurrent();
+
+  // 4. 주기적으로 센서값 측정 및 전송 (sensor만)
+  measureAndSendEnvironment();
 }
 
 /**
@@ -159,54 +164,9 @@ void handleJsonCommand(String jsonMessage) {
   if (cmd == "config") {
     handleConfigCommand(doc);
     return;
-  }
+  } 
 
-  // config_start 명령 처리
-  if (cmd == "config_start") {
-    DEVICE_COUNT = 0;
-    // 전류 상태 배열 초기화
-    for (int i = 0; i < MAX_DEVICES; i++) {
-      lastCurrentValues[i] = false;
-      initialized[i] = false;
-    }
-    sendResponse("{\"status\":\"ok\",\"message\":\"config_started\"}");
-    return;
-  }
-
-  // config_device 명령 처리
-  if (cmd == "config_device") {
-    int index = doc["index"];
-    String name = doc["name"].as<String>();
-    int relay = doc["relay"];
-    int current = doc["current"];
-
-    if (index < MAX_DEVICES) {
-      devices[index].name = name;
-      devices[index].relayPin = relay;
-      devices[index].currentPin = current;
-
-      // 릴레이 핀 설정
-      pinMode(relay, OUTPUT);
-      digitalWrite(relay, LOW);
-
-      // 전류 감지 핀 설정
-      pinMode(current, INPUT_PULLUP);
-
-      DEVICE_COUNT = max(DEVICE_COUNT, index + 1);
-      sendResponse("{\"status\":\"ok\",\"device\":\"" + name + "\",\"index\":" + String(index) + "}");
-    } else {
-      sendResponse("{\"status\":\"error\",\"message\":\"index out of range\"}");
-    }
-    return;
-  }
-
-  // config_end 명령 처리
-  if (cmd == "config_end") {
-    sendResponse("{\"status\":\"ok\",\"count\":" + String(DEVICE_COUNT) + "}");
-    return;
-  }
-
-  // switch 명령 처리 (릴레이 제어)
+  // switch 명령 처리 (릴레이 제어 - machine만)
   if (cmd == "switch") {
     String deviceName = doc["dev"];
     bool value = doc["val"];
@@ -214,10 +174,13 @@ void handleJsonCommand(String jsonMessage) {
     // 장비 딕셔너리에서 장비 정보 찾기
     DeviceInfo* device = findDevice(deviceName);
     if (device != nullptr) {
-      digitalWrite(device->relayPin, value ? HIGH : LOW);
-      
-      // 응답 전송
-      sendResponse("{\"status\":\"ok\",\"device\":\"" + deviceName + "\",\"value\":" + String(value ? "true" : "false") + "}");
+      if (device->type == "machine") {
+        digitalWrite(device->relayPin, value ? HIGH : LOW);
+        // 응답 전송
+        sendResponse("{\"status\":\"ok\",\"device\":\"" + deviceName + "\",\"value\":" + String(value ? "true" : "false") + "}");
+      } else {
+        sendResponse("{\"status\":\"error\",\"message\":\"device is not a machine: " + deviceName + "\"}");
+      }
     } else {
       sendResponse("{\"status\":\"error\",\"message\":\"unknown device: " + deviceName + "\"}");
     }
@@ -253,21 +216,33 @@ void handleConfigCommand(DynamicJsonDocument& doc) {
     }
 
     String name = deviceObj["name"].as<String>();
+    String type = deviceObj["type"].as<String>();
     int relay = deviceObj["relay"];
-    int current = deviceObj["current"];
+    int sensor = deviceObj["sensor"];
 
     devices[DEVICE_COUNT].name = name;
+    devices[DEVICE_COUNT].type = type;
     devices[DEVICE_COUNT].relayPin = relay;
-    devices[DEVICE_COUNT].currentPin = current;
+    devices[DEVICE_COUNT].sensorPin = sensor;
 
-    // 릴레이 핀 설정
-    if (relay != 0) { 
-      pinMode(relay, OUTPUT);
-      digitalWrite(relay, LOW);
+    // machine 타입: 릴레이 핀과 전류 감지 핀 설정
+    if (type == "machine") {
+      // 릴레이 핀 설정
+      if (relay != 0) {
+        pinMode(relay, OUTPUT);
+        digitalWrite(relay, LOW);
+      }
+      // 전류 감지 핀 설정 (sensorPin이 currentPin 역할)
+      if (sensor != 0) {
+        pinMode(sensor, INPUT_PULLUP);
+      }
     }
-
-    // 전류 감지 핀 설정
-    pinMode(current, INPUT_PULLUP);
+    // sensor 타입: 센서 입력 핀만 설정
+    else if (type == "sensor") {
+      if (sensor != 0) {
+        pinMode(sensor, INPUT);
+      }
+    }
 
     DEVICE_COUNT++;
   }
@@ -287,19 +262,22 @@ DeviceInfo* findDevice(String deviceName) {
 
 
 
-// 디지털 전류값 측정 및 전송
+// 디지털 전류값 측정 및 전송 (machine만)
 void measureAndSendCurrent() {
   static unsigned long lastCurrentCheck = 0;
-  
-  // 2초마다 전류값 측정
+
+  // 3초마다 전류값 측정
   if (millis() - lastCurrentCheck < 3000) return;
   lastCurrentCheck = millis();
-  
-  // 장비 딕셔너리를 사용하여 전류 측정 (24V 디지털 입력)
-  for (int i = 0; i < DEVICE_COUNT; i++) {
-    bool currentState = digitalRead(devices[i].currentPin);
 
-    // 주기적으로 전류 상태 전송 (2초마다 무조건 전송)
+  // machine 타입만 전류 측정 (24V 디지털 입력)
+  for (int i = 0; i < DEVICE_COUNT; i++) {
+    if (devices[i].type != "machine") continue;
+    if (devices[i].sensorPin == 0) continue;
+
+    bool currentState = digitalRead(devices[i].sensorPin);
+
+    // 주기적으로 전류 상태 전송 (3초마다 무조건 전송)
     DynamicJsonDocument currentDoc(128);
     currentDoc["cmd"] = "current";
     currentDoc["dev"] = devices[i].name;
@@ -308,6 +286,34 @@ void measureAndSendCurrent() {
     String currentData;
     serializeJson(currentDoc, currentData);
     sendResponse(currentData);
+  }
+}
+
+// 센서값 측정 및 전송 (sensor만)
+void measureAndSendEnvironment() {
+  static unsigned long lastSensorCheck = 0;
+
+  // 5초마다 센서값 측정
+  if (millis() - lastSensorCheck < 5000) return;
+  lastSensorCheck = millis();
+
+  // sensor 타입만 센서값 측정
+  for (int i = 0; i < DEVICE_COUNT; i++) {
+    if (devices[i].type != "sensor") continue;
+    if (devices[i].sensorPin == 0) continue;
+
+    // 디지털 센서값 읽기 (수위 센서 등)
+    int sensorValue = digitalRead(devices[i].sensorPin);
+
+    // environment 명령으로 센서값 전송
+    DynamicJsonDocument sensorDoc(128);
+    sensorDoc["cmd"] = "environment";
+    sensorDoc["dev"] = devices[i].name;
+    sensorDoc["val"] = sensorValue;
+
+    String sensorData;
+    serializeJson(sensorDoc, sensorData);
+    sendResponse(sensorData);
   }
 }
 
