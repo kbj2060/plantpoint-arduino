@@ -61,8 +61,9 @@ GPIO29  | INPUT_8       | 디지털 입력 8번
 // 장비 정보 구조체
 struct DeviceInfo {
   String name;
-  int relayPin;
-  int currentPin;
+  String type;      // "machine" 또는 "sensor"
+  int relayPin;     // machine만 사용
+  int sensorPin;    // machine의 경우 currentPin, sensor의 경우 센서 입력 핀
 };
 
 // 스마트팜 장비 딕셔너리 (동적 할당)
@@ -76,12 +77,18 @@ bool initialized[MAX_DEVICES] = {false};
 
 bool statusLedState = false;
 
+// 시리얼 통신 버퍼
+char serialBuffer[512];
+bool commandReady = false;
+
 // 함수 선언
+void checkSerial();
 void processCommand(String cmd);
 void handleJsonCommand(String jsonMessage);
 void handleConfigCommand(DynamicJsonDocument& doc);
 DeviceInfo* findDevice(String deviceName);
 void measureAndSendCurrent();
+void measureAndSendEnvironment();
 void sendResponse(String response);
 
 void setup() {
@@ -89,33 +96,44 @@ void setup() {
   
   // 초기화 완료 신호 전송
   sendResponse("{\"cmd\":\"init_complete\",\"status\":\"ready\"}");
-  
 }
 
 void loop() {
-  // 라즈베리파이로부터 명령 수신 및 처리
-  if (Serial.available()) {
-    // 시리얼 데이터를 한 번에 모두 읽기
-    String command = "";
-    while (Serial.available()) {
-      char c = Serial.read();
-      if (c == '\n' || c == '\r') {
-        break;
-      }
-      command += c;
-    }
-    command.trim();
+  // 1. 라즈베리파이로부터 비동기 명령 수신
+  checkSerial();
 
-    if (command.length() > 0) {
-      Serial.println("Command length: " + String(command.length()));
-      processCommand(command);
-    }
+  // 2. 수신된 명령 처리
+  if (commandReady) {
+    String command = String(serialBuffer);
+    command.trim();
+    processCommand(command);
+    commandReady = false; // 플래그 초기화
   }
 
-  // 디지털 전류값 측정 및 전송
+  // 3. 주기적으로 디지털 전류값 측정 및 전송 (machine만)
   measureAndSendCurrent();
 
-  delay(50);
+  // 4. 주기적으로 센서값 측정 및 전송 (sensor만)
+  measureAndSendEnvironment();
+}
+
+/**
+ * @brief 시리얼 포트를 비동기 방식으로 확인하여 '\n' 문자를 기준으로 명령어를 완성합니다.
+ */
+void checkSerial() {
+  static byte i = 0;
+  while (Serial.available() > 0) {
+    char ch = Serial.read();
+    if (ch != '\n' && ch != '\r' && i < sizeof(serialBuffer) - 1) {
+      serialBuffer[i++] = ch;
+    } else {
+      serialBuffer[i] = '\0'; // 문자열 종료
+      i = 0;
+      if (strlen(serialBuffer) > 0) {
+        commandReady = true;
+      }
+    }
+  }
 }
 
 // 라즈베리파이 명령 처리
@@ -131,13 +149,11 @@ void processCommand(String cmd) {
 
 // JSON 명령 처리
 void handleJsonCommand(String jsonMessage) {
-  Serial.println("JSON received: " + jsonMessage);
-  DynamicJsonDocument doc(2048);  // 버퍼 크기 증가
+  DynamicJsonDocument doc(512); // JSON 버퍼 크기 최적화
   DeserializationError error = deserializeJson(doc, jsonMessage);
 
   if (error) {
-    Serial.println("JSON parse error: " + String(error.c_str()));
-    sendResponse("{\"status\":\"error\",\"message\":\"json parse error\"}");
+    sendResponse("{\"status\":\"error\",\"message\":\"JSON parse error\"}");
     return;
   }
 
@@ -148,58 +164,9 @@ void handleJsonCommand(String jsonMessage) {
   if (cmd == "config") {
     handleConfigCommand(doc);
     return;
-  }
+  } 
 
-  // config_start 명령 처리
-  if (cmd == "config_start") {
-    int count = doc["count"];
-    Serial.println("Config start - " + String(count) + " devices");
-    DEVICE_COUNT = 0;
-    // 전류 상태 배열 초기화
-    for (int i = 0; i < MAX_DEVICES; i++) {
-      lastCurrentValues[i] = false;
-      initialized[i] = false;
-    }
-    sendResponse("{\"status\":\"ok\",\"message\":\"config_started\"}");
-    return;
-  }
-
-  // config_device 명령 처리
-  if (cmd == "config_device") {
-    int index = doc["index"];
-    String name = doc["name"].as<String>();
-    int relay = doc["relay"];
-    int current = doc["current"];
-
-    if (index < MAX_DEVICES) {
-      devices[index].name = name;
-      devices[index].relayPin = relay;
-      devices[index].currentPin = current;
-
-      // 릴레이 핀 설정
-      pinMode(relay, OUTPUT);
-      digitalWrite(relay, LOW);
-
-      // 전류 감지 핀 설정
-      pinMode(current, INPUT_PULLUP);
-
-      DEVICE_COUNT = max(DEVICE_COUNT, index + 1);
-      Serial.println("Device " + String(index) + ": " + name + " (relay:" + String(relay) + ", current:" + String(current) + ")");
-      sendResponse("{\"status\":\"ok\",\"device\":\"" + name + "\",\"index\":" + String(index) + "}");
-    } else {
-      sendResponse("{\"status\":\"error\",\"message\":\"index out of range\"}");
-    }
-    return;
-  }
-
-  // config_end 명령 처리
-  if (cmd == "config_end") {
-    Serial.println("Config completed: " + String(DEVICE_COUNT) + " devices");
-    sendResponse("{\"status\":\"ok\",\"count\":" + String(DEVICE_COUNT) + "}");
-    return;
-  }
-
-  // switch 명령 처리 (릴레이 제어)
+  // switch 명령 처리 (릴레이 제어 - machine만)
   if (cmd == "switch") {
     String deviceName = doc["dev"];
     bool value = doc["val"];
@@ -207,10 +174,13 @@ void handleJsonCommand(String jsonMessage) {
     // 장비 딕셔너리에서 장비 정보 찾기
     DeviceInfo* device = findDevice(deviceName);
     if (device != nullptr) {
-      digitalWrite(device->relayPin, value ? HIGH : LOW);
-      
-      // 응답 전송
-      sendResponse("{\"status\":\"ok\",\"device\":\"" + deviceName + "\",\"value\":" + String(value ? "true" : "false") + "}");
+      if (device->type == "machine") {
+        digitalWrite(device->relayPin, value ? HIGH : LOW);
+        // 응답 전송
+        sendResponse("{\"status\":\"ok\",\"device\":\"" + deviceName + "\",\"value\":" + String(value ? "true" : "false") + "}");
+      } else {
+        sendResponse("{\"status\":\"error\",\"message\":\"device is not a machine: " + deviceName + "\"}");
+      }
     } else {
       sendResponse("{\"status\":\"error\",\"message\":\"unknown device: " + deviceName + "\"}");
     }
@@ -223,11 +193,9 @@ void handleJsonCommand(String jsonMessage) {
 
 // config 명령 처리 (장비 동적 설정)
 void handleConfigCommand(DynamicJsonDocument& doc) {
-  Serial.println("Config command received");
   JsonArray devicesArray = doc["devices"];
 
   if (devicesArray.isNull()) {
-    Serial.println("Error: devices array is null");
     sendResponse("{\"status\":\"error\",\"message\":\"devices array required\"}");
     return;
   }
@@ -242,33 +210,43 @@ void handleConfigCommand(DynamicJsonDocument& doc) {
   }
 
   // 새로운 장비 설정
-  Serial.println("Processing " + String(devicesArray.size()) + " devices");
   for (JsonObject deviceObj : devicesArray) {
     if (DEVICE_COUNT >= MAX_DEVICES) {
       break;
     }
 
     String name = deviceObj["name"].as<String>();
+    String type = deviceObj["type"].as<String>();
     int relay = deviceObj["relay"];
-    int current = deviceObj["current"];
-
-    Serial.println("Device " + String(DEVICE_COUNT) + ": " + name + " (relay:" + String(relay) + ", current:" + String(current) + ")");
+    int sensor = deviceObj["sensor"];
 
     devices[DEVICE_COUNT].name = name;
+    devices[DEVICE_COUNT].type = type;
     devices[DEVICE_COUNT].relayPin = relay;
-    devices[DEVICE_COUNT].currentPin = current;
+    devices[DEVICE_COUNT].sensorPin = sensor;
 
-    // 릴레이 핀 설정
-    pinMode(relay, OUTPUT);
-    digitalWrite(relay, LOW);
-
-    // 전류 감지 핀 설정
-    pinMode(current, INPUT_PULLUP);
+    // machine 타입: 릴레이 핀과 전류 감지 핀 설정
+    if (type == "machine") {
+      // 릴레이 핀 설정
+      if (relay != 0) {
+        pinMode(relay, OUTPUT);
+        digitalWrite(relay, LOW);
+      }
+      // 전류 감지 핀 설정 (sensorPin이 currentPin 역할)
+      if (sensor != 0) {
+        pinMode(sensor, INPUT_PULLUP);
+      }
+    }
+    // sensor 타입: 센서 입력 핀만 설정
+    else if (type == "sensor") {
+      if (sensor != 0) {
+        pinMode(sensor, INPUT);
+      }
+    }
 
     DEVICE_COUNT++;
   }
 
-  Serial.println("Config completed: " + String(DEVICE_COUNT) + " devices");
   sendResponse("{\"status\":\"ok\",\"count\":" + String(DEVICE_COUNT) + "}");
 }
 
@@ -284,33 +262,58 @@ DeviceInfo* findDevice(String deviceName) {
 
 
 
-// 디지털 전류값 측정 및 전송
+// 디지털 전류값 측정 및 전송 (machine만)
 void measureAndSendCurrent() {
   static unsigned long lastCurrentCheck = 0;
-  
-  // 2초마다 전류값 측정
-  if (millis() - lastCurrentCheck < 2000) return;
+
+  // 3초마다 전류값 측정
+  if (millis() - lastCurrentCheck < 3000) return;
   lastCurrentCheck = millis();
-  
-  // 장비 딕셔너리를 사용하여 전류 측정 (24V 디지털 입력)
+
+  // machine 타입만 전류 측정 (24V 디지털 입력)
   for (int i = 0; i < DEVICE_COUNT; i++) {
-    bool currentState = digitalRead(devices[i].currentPin);
+    if (devices[i].type != "machine") continue;
+    if (devices[i].sensorPin == 0) continue;
 
-    // 초기화 또는 상태 변화 시 전송
-    if (!initialized[i] || currentState != lastCurrentValues[i]) {
-      initialized[i] = true;
-      lastCurrentValues[i] = currentState;
+    bool currentState = digitalRead(devices[i].sensorPin);
 
-      // 짧은 JSON 형태로 전류 상태 전송
-      DynamicJsonDocument currentDoc(128);
-      currentDoc["cmd"] = "current";
-      currentDoc["dev"] = devices[i].name;
-      currentDoc["val"] = currentState;
+    // 주기적으로 전류 상태 전송 (3초마다 무조건 전송)
+    DynamicJsonDocument currentDoc(128);
+    currentDoc["cmd"] = "current";
+    currentDoc["dev"] = devices[i].name;
+    currentDoc["val"] = currentState;
 
-      String currentData;
-      serializeJson(currentDoc, currentData);
-      sendResponse(currentData);
-    }
+    String currentData;
+    serializeJson(currentDoc, currentData);
+    sendResponse(currentData);
+  }
+}
+
+// 센서값 측정 및 전송 (sensor만)
+void measureAndSendEnvironment() {
+  static unsigned long lastSensorCheck = 0;
+
+  // 5초마다 센서값 측정
+  if (millis() - lastSensorCheck < 5000) return;
+  lastSensorCheck = millis();
+
+  // sensor 타입만 센서값 측정
+  for (int i = 0; i < DEVICE_COUNT; i++) {
+    if (devices[i].type != "sensor") continue;
+    if (devices[i].sensorPin == 0) continue;
+
+    // 디지털 센서값 읽기 (수위 센서 등)
+    int sensorValue = digitalRead(devices[i].sensorPin);
+
+    // environment 명령으로 센서값 전송
+    DynamicJsonDocument sensorDoc(128);
+    sensorDoc["cmd"] = "environment";
+    sensorDoc["dev"] = devices[i].name;
+    sensorDoc["val"] = sensorValue;
+
+    String sensorData;
+    serializeJson(sensorDoc, sensorData);
+    sendResponse(sensorData);
   }
 }
 
